@@ -153,7 +153,7 @@ function TFT.odd_couple_deck()
 	if not G.playing_cards then return end
 	for i, card in ipairs(G.playing_cards) do
 		local roll = pseudorandom(pseudoseed('tft_odd_couple' .. i .. G.GAME.round_resets.ante))
-		local target = roll < 0.5 and p_card('Clubs', '2') or p_card('Hearts', 'K')
+		local target = roll < 0.5 and p_card('Clubs', '2') or p_card('Hearts', 'Q')
 		if target and card.set_base then card:set_base(target) end
 	end
 end

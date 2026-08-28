@@ -35,6 +35,17 @@ function get_current_pool(_type, _rarity, _legendary, _append)
 		return _tft_orig_get_current_pool(_type, nil, true, _append)
 	end
 
+	-- Consumable-odds-by-level (next-session-plan-4.md item 6, domain/
+	-- consumable_odds.lua): applies independently of the Joker-rarity logic
+	-- below, which this function otherwise exists for -- Tarot/Spectral pools
+	-- have no "rarity" concept at all (_rarity/_legendary are always nil for
+	-- them), so this branch has to come before the Joker-only early return.
+	if (_type == 'Tarot' or _type == 'Spectral') and TFT.is_run_active() then
+		local pool, pool_key = _tft_orig_get_current_pool(_type, _rarity, _legendary, _append)
+		local level = state and state.level or 1
+		return TFT.apply_consumable_weights(pool, level), pool_key
+	end
+
 	if _type ~= 'Joker' or _rarity or _legendary or not TFT.is_run_active() then
 		return _tft_orig_get_current_pool(_type, _rarity, _legendary, _append)
 	end
@@ -97,5 +108,41 @@ function get_current_pool(_type, _rarity, _legendary, _append)
 	-- passing a representative float that lands in the correct vanilla bucket
 	-- instead of the tier number itself.
 	local representative_roll = ({ [1] = 0.5, [2] = 0.8, [3] = 0.96 })[rarity]
-	return _tft_orig_get_current_pool(_type, representative_roll, _legendary, _append)
+	local pool, pool_key = _tft_orig_get_current_pool(_type, representative_roll, _legendary, _append)
+	return TFT.filter_pool_by_shared_availability(pool), pool_key
+end
+
+-- Shared Joker Pool (docs/design/joker-ranking.md, next-session-plan.md
+-- priority #2): lobby-wide scarcity, multiplayer only -- solo play has no
+-- lobby to share a pool across, so it's left untouched (every existing
+-- rarity/odds/augment logic above still applies as-is). Real vanilla/SMODS
+-- code throughout this same pool system (SMODS.get_clean_pool,
+-- SMODS.get_next_vouchers, etc. -- functions/common_events.lua,
+-- SMODS/_/src/utils.lua) already treats the literal string 'UNAVAILABLE' as
+-- "skip and resample" for exactly this kind of slot exclusion -- reusing that
+-- existing, sanctioned convention rather than inventing a second one.
+--
+-- Snapshot-refresh, not live-tracked (the design doc's own resolved choice):
+-- this reads whatever TFT._lobby_joker_ownership currently holds (last
+-- broadcast from each player, objects/actions/joker_ownership.lua) at the
+-- moment THIS shop roll happens -- no live decrementing, no purchase-time
+-- locking. Two players' shops opening close together in time can both see
+-- "copies available" and both actually buy the last one or two -- an
+-- accepted, rare pool overrun (the doc's own "Confirmed: option 1"), not a
+-- bug to guard against here.
+function TFT.filter_pool_by_shared_availability(pool)
+	local state = TFT.get_state()
+	if not state or not state.is_multiplayer or not pool then return pool end
+
+	for i, key in ipairs(pool) do
+		if key ~= 'UNAVAILABLE' and G.P_CENTERS[key] and G.P_CENTERS[key].set == 'Joker'
+			and key ~= 'j_tft_traits_engine' then
+			local tier = TFT.get_power_tier(key, G.P_CENTERS[key].rarity)
+			local available = TFT.shared_pool_size(tier) - TFT.copies_owned_lobby_wide(key)
+			if available <= 0 then
+				pool[i] = 'UNAVAILABLE'
+			end
+		end
+	end
+	return pool
 end

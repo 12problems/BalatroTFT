@@ -51,6 +51,7 @@ function Game:start_run(args)
 		-- a fresh run actually starts.
 		TFT._opponent_life_totals = {}
 		TFT._eliminated_players = {}
+		TFT._lobby_joker_ownership = {}
 		state.eliminated = nil
 		state.match_won = nil
 		state.placement = nil

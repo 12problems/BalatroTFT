@@ -5,11 +5,16 @@
 --
 -- Money/hand-size/discard/slot bonuses are applied here directly against
 -- G.GAME.starting_params / G.hand / G.jokers / G.consumeables where vanilla
--- itself exposes a simple additive field; the two "Voucher Choice" benefits
--- (levels 5 and 9) and the level-8 Deck Refinement pick are STUBBED this
--- session (logged only, no real pick UI) -- same "engine present, content pass
--- pending" scoping as the checkpoint stub in poll.lua.
+-- itself exposes a simple additive field. The "Voucher Choice" benefits
+-- (levels 5 and 9) and the level-8 Deck Refinement pick are real now
+-- (objects/round_flow/level_rewards.lua) -- collected into
+-- state.pending_level_reward_queue and shown one at a time via
+-- TFT.show_next_level_reward() rather than applied inline here, since they
+-- need a player-facing picker (can't just apply a value) and, being able to
+-- span more than one level in a single XP grant, need to sequence among
+-- themselves too.
 function TFT.apply_level_up(from_level, to_level)
+	local reward_levels = {}
 	for level = from_level, to_level do
 		local benefit = TFT.LevelBenefits[level]
 		if benefit then
@@ -30,13 +35,21 @@ function TFT.apply_level_up(from_level, to_level)
 			end
 
 			if benefit.voucher_choice_tier1_count or benefit.voucher_choice_level9 or benefit.deck_refinement_remove_up_to then
-				TFT.sendDebugMessage('Level ' .. level .. ' voucher/deck-refinement benefit due (stub, no pick UI this session)')
+				table.insert(reward_levels, level)
 			end
 		end
 	end
 
 	if G.GAME then
 		TFT.sendDebugMessage('TFT level up: ' .. from_level .. ' -> ' .. to_level)
+	end
+
+	if #reward_levels > 0 then
+		local state = TFT.get_state()
+		if state then
+			state.pending_level_reward_queue = reward_levels
+			TFT.show_next_level_reward()
+		end
 	end
 end
 

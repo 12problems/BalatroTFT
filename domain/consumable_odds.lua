@@ -51,3 +51,43 @@ function TFT.consumable_weight(card_key, level)
 	end
 	return 1.0
 end
+
+-- Runtime wiring (next-session-plan-4.md item 6): applies the weights above to
+-- an already-built card-key pool array, the same array shape/convention
+-- get_current_pool itself returns (one slot per eligible card, a single
+-- uniform pseudorandom_element pick over the whole array -- confirmed via
+-- source read of the real installed functions/common_events.lua, no reroll
+-- logic at that call site) and the same one objects/round_flow/shop_odds.lua's
+-- Shared Joker Pool filter already mutates for its own exclusion purpose.
+-- Weighting via REPETITION rather than a real weighted-random function: each
+-- key gets `round(weight * TFT.CONSUMABLE_WEIGHT_RESOLUTION)` copies in the
+-- output array instead of exactly 1, so a plain uniform pick over the
+-- resulting array reproduces the intended proportions -- consistent with the
+-- pool's own existing "array of repeated/removed slots" convention rather
+-- than introducing a second, different weighting mechanism. A weight of 0.0
+-- means 0 copies, i.e. fully excluded (matches "impossible until level 7"
+-- for Justice) -- distinct from vanilla's own 'UNAVAILABLE' sentinel, which
+-- this function never emits (it only ever removes/duplicates real keys).
+TFT.CONSUMABLE_WEIGHT_RESOLUTION = 10
+
+function TFT.apply_consumable_weights(pool, level)
+	if not pool or not level then return pool end
+	local out = {}
+	for _, key in ipairs(pool) do
+		if key == 'UNAVAILABLE' then
+			out[#out + 1] = key
+		else
+			local weight = TFT.consumable_weight(key, level)
+			local copies = math.floor(weight * TFT.CONSUMABLE_WEIGHT_RESOLUTION + 0.5)
+			for _ = 1, copies do
+				out[#out + 1] = key
+			end
+		end
+	end
+	-- A pool that weighted-out to nothing (shouldn't normally happen given
+	-- weights bottom out at 0.0 only for a handful of specific cards, never
+	-- the whole pool at once) falls back to the untouched original rather
+	-- than handing the caller an empty array to pick from.
+	if #out == 0 then return pool end
+	return out
+end

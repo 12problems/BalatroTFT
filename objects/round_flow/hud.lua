@@ -49,12 +49,51 @@ end
 TFT.round_timer_text = TFT.round_timer_text or '0:00.00'
 TFT.hud_life_text = TFT.hud_life_text or ('Life ' .. TFT.STARTING_LIFE)
 TFT.hud_opponent_life_text = TFT.hud_opponent_life_text or ''
+-- Early Warning augment display (closes next-session-plan-3.md priority
+-- #1.2 -- previously a complete no-op with a comment claiming otherwise).
+-- Empty string renders as a zero-height text row, so this row is always
+-- present in the HUD tree (built once per run) but only ever shows real
+-- text once the augment is actually picked and a live PvP pairing exists --
+-- avoids needing to rebuild the HUD tree mid-run when the augment is
+-- acquired at a later checkpoint than run start.
+TFT.hud_early_warning_text = TFT.hud_early_warning_text or ''
+-- Level/XP display (next-session-plan-4.md item 1) -- attached directly to
+-- G.deck (see TFT.attach_deck_level_display below) rather than spliced into
+-- create_UIBox_HUD's left-side panel tree, per explicit instruction that this
+-- belongs near the always-visible deck sprite instead.
+TFT.hud_level_text = TFT.hud_level_text or 'Lv. 1'
+-- Live in-overlay countdown text (full timer functionality, 2026-08-28) --
+-- refreshed every frame below, bound via ui/picker.lua's `timer_ref` support.
+TFT.checkpoint_timer_text = TFT.checkpoint_timer_text or ''
+TFT.carousel_timer_text = TFT.carousel_timer_text or ''
 
+-- Timer enable/disable (next-session-plan-4.md item 5): full real
+-- functionality as of 2026-08-28 (domain/round_timers.lua) -- for a real
+-- PvE/PvP hand-playing round this now counts DOWN from a real per-stage
+-- budget and really enforces it (TFT.round_flow_poll forces the round to
+-- end once it hits zero); "disabled" (the lobby's Round Timer setting)
+-- turns enforcement off entirely, not just the display, same as before.
+-- Round types with no hand-playing budget (Carousel, or single-player where
+-- state.is_multiplayer is false -- the design doc's own timers are all
+-- multiplayer-lobby concepts) fall back to the original cosmetic count-UP
+-- stopwatch, unchanged.
 function TFT.restart_round_timer()
 	local state = TFT.get_state()
 	if not state then return end
+	state.round_timed_out_for_index = nil
+	if state.timer_enabled == false then
+		state.round_started_at = nil
+		state.round_deadline_at = nil
+		TFT.round_timer_text = 'Timer Off'
+		return
+	end
+	local round_def = TFT.current_round_def()
+	local budget = state.is_multiplayer and round_def
+		and (round_def.round_type == TFT.RoundType.PVE or round_def.round_type == TFT.RoundType.PVP)
+		and TFT.hand_playing_timer_seconds(round_def.stage)
 	state.round_started_at = love.timer.getTime()
-	TFT.round_timer_text = TFT.format_round_timer(0)
+	state.round_deadline_at = budget and (state.round_started_at + budget) or nil
+	TFT.round_timer_text = TFT.format_round_timer(budget or 0)
 end
 
 -- Called every frame from TFT.round_flow_poll.
@@ -63,8 +102,25 @@ function TFT.update_hud_display_texts()
 	local state = TFT.get_state()
 	if not state then return end
 
-	if state.round_started_at then
+	if state.shop_deadline_at then
+		-- Shop's own real timer (domain/round_timers.lua) takes over the same
+		-- HUD element while browsing -- there's no "round" running to time.
+		TFT.round_timer_text = TFT.format_round_timer(math.max(0, state.shop_deadline_at - love.timer.getTime()))
+	elseif state.round_deadline_at then
+		TFT.round_timer_text = TFT.format_round_timer(math.max(0, state.round_deadline_at - love.timer.getTime()))
+	elseif state.round_started_at then
 		TFT.round_timer_text = TFT.format_round_timer(love.timer.getTime() - state.round_started_at)
+	end
+
+	-- Live in-overlay countdowns (full timer functionality, 2026-08-28) --
+	-- see ui/picker.lua's `timer_ref` support for how these actually render.
+	if state.pending_augment_offer and state.pending_augment_offer.deadline_at then
+		TFT.checkpoint_timer_text = TFT.format_round_timer(
+			math.max(0, state.pending_augment_offer.deadline_at - love.timer.getTime()))
+	end
+	if state.carousel_draft and state.carousel_draft.turn_started_at then
+		local remaining = TFT.CAROUSEL_TURN_TIMER_SECONDS - (love.timer.getTime() - state.carousel_draft.turn_started_at)
+		TFT.carousel_timer_text = TFT.format_round_timer(math.max(0, remaining))
 	end
 
 	TFT.hud_life_text = 'Life ' .. math.floor((state.life_total or TFT.STARTING_LIFE) + 0.5)
@@ -80,6 +136,37 @@ function TFT.update_hud_display_texts()
 		end
 	end
 	TFT.hud_opponent_life_text = opp_text
+
+	local ew_text = ''
+	if TFT.has_augment and TFT.has_augment('early_warning') and state.current_pairing then
+		local ok, upcoming = pcall(TFT.upcoming_pvp_opponents, 2)
+		if ok and upcoming and #upcoming > 0 then
+			local lobby = MPAPI.get_current_lobby and MPAPI.get_current_lobby()
+			local parts = {}
+			for i, opp_id in ipairs(upcoming) do
+				if opp_id == 'ghost' then
+					parts[i] = 'Ghost'
+				else
+					local p = lobby and lobby._players and lobby._players[opp_id]
+					parts[i] = (p and p.displayName) or opp_id
+				end
+			end
+			ew_text = 'Next: ' .. table.concat(parts, ', ')
+		end
+	end
+	TFT.hud_early_warning_text = ew_text
+
+	-- "Just Lv. X with a fraction showing the progress they have to that
+	-- level" -- explicit instruction. TFT.level_for_xp already returns
+	-- (level, into_next, needed_for_next); at the level cap needed_for_next
+	-- is 0 (domain/xp_curve.lua), shown as a plain level with no fraction
+	-- rather than a divide-by-zero-shaped "x/0".
+	local level, into_next, needed_for_next = TFT.level_for_xp(state.xp or 0)
+	if needed_for_next and needed_for_next > 0 then
+		TFT.hud_level_text = 'Lv. ' .. level .. '  ' .. into_next .. '/' .. needed_for_next .. ' XP'
+	else
+		TFT.hud_level_text = 'Lv. ' .. level .. ' (MAX)'
+	end
 end
 
 -- Same pip-per-round strip as blind_select.lua's own TFT.build_stage_roadmap_
@@ -146,6 +233,65 @@ function TFT.build_hud_life_row()
 			}},
 		},
 	}
+end
+
+-- Single wide row for the Early Warning augment's opponent-lookahead text --
+-- see TFT.hud_early_warning_text above for why this is always present but
+-- usually empty.
+function TFT.build_hud_early_warning_row()
+	local scale = 0.35
+	return {
+		n = G.UIT.R, config = { align = 'cm' }, nodes = {
+			{ n = G.UIT.O, config = { object = DynaText({ string = { { ref_table = TFT, ref_value = 'hud_early_warning_text' } }, colours = { G.C.UI.TEXT_LIGHT }, shadow = true, font = G.LANGUAGES['en-us'].font, scale = scale }) } },
+		},
+	}
+end
+
+-- Attaches the Level/XP text directly above the real G.deck CardArea object,
+-- the same "float a UIBox as a child of a real Moveable" technique vanilla's
+-- own Card:redeem() uses for its "Voucher / Redeemed!" popup text (card.lua,
+-- `self.children.top_disp = UIBox{..., config = {align = 'tm', parent =
+-- self}}`) -- rather than hunting for a nonexistent "deck sprite UI builder"
+-- to hook the way every other HUD element this project has added does
+-- (grepped the real installed source for one; the deck's own "52/52" count
+-- render isn't built through any create_UIBox_* function at all, so there's
+-- nothing to splice into). `align = 'tm'` positions above the parent's own
+-- top edge, matching top_disp's exact convention.
+--
+-- CAUGHT live: attaching to `self.children` alone isn't enough for a
+-- CardArea the way it is for a Card -- confirmed by reading the real
+-- installed cardarea.lua's own CardArea:draw(): it only ever calls
+-- `self.children.area_uibox:draw()` (that ONE specific, hardcoded name, its
+-- own card-count display), never a generic loop over every entry in
+-- `self.children`. A plain child attach was silently invisible on a real
+-- screenshot (never drawn) before this fix. Card:draw() (a different class)
+-- DOES loop its own children generically, which is what makes top_disp/
+-- bot_disp above actually work there -- the two classes aren't consistent
+-- with each other here. Fixed below by hooking CardArea:draw itself to
+-- explicitly draw this one extra child for G.deck specifically, the same
+-- "hook the real render function" pattern this project already uses
+-- elsewhere rather than fighting a per-type internal convention.
+--
+-- Called once per run, from round_flow/poll.lua once G.deck actually exists
+-- (deferred the same way TFT.ensure_traits_engine_joker is -- attaching
+-- inside Game:start_run itself hung the game once already this project,
+-- hooks.lua's own comment on that exact mistake).
+function TFT.attach_deck_level_display()
+	if not G.deck or G.deck.children.tft_level_display then return end
+	G.deck.children.tft_level_display = UIBox{
+		definition = { n = G.UIT.ROOT, config = { align = 'cm', colour = G.C.CLEAR, padding = 0.1 }, nodes = {
+			{ n = G.UIT.O, config = { object = DynaText({ string = { { ref_table = TFT, ref_value = 'hud_level_text' } }, colours = { G.C.GOLD }, shadow = true, font = G.LANGUAGES['en-us'].font, scale = 0.5 }) } },
+		} },
+		config = { align = 'tm', offset = { x = 0, y = -0.3 }, parent = G.deck },
+	}
+end
+
+local _tft_orig_cardarea_draw = CardArea.draw
+function CardArea:draw()
+	_tft_orig_cardarea_draw(self)
+	if self == G.deck and self.children.tft_level_display then
+		self.children.tft_level_display:draw()
+	end
 end
 
 -- Plain recursive search over a create_UIBox_HUD-style NODE-DEFINITION tree
@@ -263,6 +409,7 @@ function create_UIBox_HUD()
 		if round_col and round_col.nodes then
 			table.insert(round_col.nodes, TFT.build_hud_life_spacer_row())
 			table.insert(round_col.nodes, TFT.build_hud_life_row())
+			table.insert(round_col.nodes, TFT.build_hud_early_warning_row())
 		end
 	end)
 	if not ok then TFT.sendWarnMessage('HUD relocation failed: ' .. tostring(err)) end

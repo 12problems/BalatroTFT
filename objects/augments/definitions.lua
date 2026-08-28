@@ -88,10 +88,13 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'iron_wall', name = 'Iron Wall', tier = 2, category = 'Defensive & PvP',
 		desc = 'Reduce incoming PvP damage by 20%, but reduce your own outgoing PvP damage by 10%.',
-		-- read in round_result.lua -- the "outgoing -10%" half isn't applied
-		-- (would need broadcasting augment picks to the opponent's client so
-		-- THEIR damage-taken calc knows to reduce it; flagged, not silently
-		-- dropped -- see this file's own closing note on cross-client gaps).
+		-- WIRED, both halves. The incoming -20% reduction is read locally in
+		-- round_result.lua's loss branch (TFT.apply_own_defensive_reductions).
+		-- The outgoing -10% half rides the existing tft_round_result broadcast
+		-- (its payload carries an `augments` flag set), so the OPPONENT's own
+		-- client applies the reduction to the damage IT computes against
+		-- itself -- no separate broadcast action was needed. Verified via a
+		-- forced-input synthetic on_receive test (exact life-total match).
 	},
 	{
 		key = 'bargain_bin', name = 'Bargain Bin', tier = 2, category = 'Economic',
@@ -252,12 +255,15 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'early_warning', name = 'Early Warning', tier = 1, category = 'Utility & Information',
 		desc = 'See your next 2 PvP opponents in the round-robin order, not just the next 1.',
-		-- read in ui/lobby.lua-adjacent UI (state.augments_picked check) --
-		-- pairing lookahead itself is real (domain/pvp_pairing.lua is pure and
-		-- stateless per round number), only the extra HUD row surfacing it is
-		-- new. Flagged: no dedicated UI panel built this pass, so this is data-
-		-- available-on-request (TFT.upcoming_pvp_opponents) rather than an
-		-- always-visible display -- a real, live gap on the QoL/display side.
+		-- WIRED (closed next-session-plan-3.md priority #1.2, which found this
+		-- augment was a total no-op despite an older comment here claiming
+		-- otherwise -- TFT.upcoming_pvp_opponents genuinely did not exist
+		-- before). TFT.upcoming_pvp_opponents (objects/round_flow/pvp.lua) does
+		-- the real lookahead against domain/pvp_pairing.lua's pure pairing
+		-- function using today's alive-player set; objects/round_flow/hud.lua's
+		-- TFT.update_hud_display_texts checks TFT.has_augment('early_warning')
+		-- every frame and surfaces the result as a "Next: ..." row in the
+		-- persistent HUD, right below the Life/Opp row.
 	},
 
 	-- More Gold
@@ -312,11 +318,11 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'counterpunch', name = 'Counterpunch', tier = 2, category = 'Defensive & PvP',
 		desc = "When you win a PvP round, deal bonus damage scaled to your margin of victory.",
-		-- NOT WIRED: the bonus damage needs to land on the OPPONENT's own life
-		-- total, which lives on THEIR client -- doing this for real needs a new
-		-- broadcast action (the winner tells the loser "take N more damage"),
-		-- which this pass didn't add (see this file's closing note). Flagged,
-		-- not silently half-implemented.
+		-- WIRED. Rides the existing tft_round_result broadcast (no new network
+		-- action needed): the LOSER's own client sees `opp_aug.counterpunch`
+		-- in round_result.lua's loss branch and applies the bonus to the
+		-- damage it computes against itself. Verified via a forced-score
+		-- synthetic on_receive test with an exact life-total match.
 	},
 	{
 		key = 'second_wind', name = 'Second Wind', tier = 2, category = 'Defensive & PvP',
@@ -326,17 +332,55 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'deck_surgeon', name = 'Deck Surgeon', tier = 2, category = 'Deck & Cards',
 		desc = 'Remove any 5 cards of your choice from your deck.',
-		-- NOT WIRED: needs a real deck-browsing multi-select picker UI (choose
-		-- 5 specific cards from a full 52+ card deck) -- a materially bigger UI
-		-- build than this pass's picker helper (ui/picker.lua) supports. Flagged
-		-- rather than silently downgraded to "5 random" (that's Thin the Herd's
-		-- job, a different augment with a different, intentionally-random
-		-- design).
+		-- CLOSED, next-session-plan.md priority #3: real multi-select picker
+		-- (objects/augments/deck_picker.lua). Removal mirrors vanilla's own
+		-- Tarot-card-destruction pattern (The Hanged Man, card.lua) --
+		-- shatter for glass cards, dissolve-animation destroy otherwise.
+		apply = function()
+			TFT.open_deck_card_picker({
+				title = 'Deck Surgeon',
+				max_select = 5,
+				exact = true,
+				on_confirm = function(cards)
+					for _, card in ipairs(cards) do
+						if SMODS.shatters(card) then
+							card:shatter()
+						else
+							card:start_dissolve()
+						end
+					end
+				end,
+			})
+		end,
 	},
 	{
 		key = 'seal_artisan', name = 'Seal Artisan', tier = 2, category = 'Deck & Cards',
 		desc = 'Choose up to 4 cards in your deck and assign each a Seal of your choice.',
-		-- NOT WIRED: same reason as Deck Surgeon -- needs a per-card choice UI.
+		-- CLOSED, next-session-plan.md priority #3: real multi-select picker
+		-- for WHICH cards (objects/augments/deck_picker.lua). ASSUMPTION
+		-- (flagged, consistent with this pass's established scope-down for
+		-- "choose X" augments -- Suit Yourself/Monopoly already auto-roll
+		-- their own choice rather than building a bespoke sub-picker): the
+		-- Seal TYPE per selected card is auto-rolled from the 4 real seals
+		-- (Red/Blue/Gold/Purple) rather than a second per-card choice --
+		-- the novel, actually-hard UI problem here was picking WHICH cards,
+		-- which is now real; a second nested picker for seal colour per card
+		-- would be a lot of additional UI for a purely cosmetic-vs-mechanical
+		-- choice among 4 known, well-understood effects.
+		apply = function()
+			TFT.open_deck_card_picker({
+				title = 'Seal Artisan',
+				max_select = 4,
+				exact = false,
+				on_confirm = function(cards)
+					local seals = { 'Red', 'Blue', 'Gold', 'Purple' }
+					for i, card in ipairs(cards) do
+						local seal = seals[math.floor(pseudorandom(pseudoseed('tft_seal_artisan' .. i)) * 4) + 1]
+						card:set_seal(seal, true)
+					end
+				end,
+			})
+		end,
 	},
 	{
 		key = 'suit_yourself', name = 'Suit Yourself', tier = 2, category = 'Deck & Cards',
@@ -373,9 +417,9 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'perfect_game', name = 'Perfect Game', tier = 3, category = 'Combat & Stats',
 		desc = 'Beat a non-PvP blind by the EXACT chip requirement to choose a permanent bonus.',
-		-- NOT WIRED: augments.md itself flags the reward pool as undesigned
-		-- ("Reward pool not designed yet — open item"). Nothing to implement
-		-- against yet; would need that design decision first.
+		-- CLOSED, next-session-plan.md priority #3: reward pool designed and
+		-- wired -- see objects/augments/perfect_game.lua (trigger check called
+		-- from poll.lua's TFT.round_flow_advance).
 	},
 	{
 		key = 'monopoly', name = 'Monopoly', tier = 3, category = 'Economic',
@@ -429,11 +473,16 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'double_pack', name = 'Double Pack', tier = 3, category = 'Shop & Items',
 		desc = 'Buying a booster pack opens 2 packs of that type instead of 1.',
-		-- NOT WIRED: needs a hook into the pack-opening flow (Card:open,
-		-- functions/common_events.lua) to run its contents-grant twice --
-		-- objects/augments/shop_effects.lua only wired Pack Rat's extra-choice
-		-- case this pass, not a second full pack open. Flagged as a real,
-		-- separate follow-up, not silently folded into Pack Rat.
+		-- STILL NOT WIRED, but no longer for lack of trying -- see the long
+		-- comment above Card:open in objects/augments/shop_effects.lua for a
+		-- full account. 2 real bugs in the approach were found and fixed live
+		-- (a stuck-game-state freeze, then an invisible/uninteractable second
+		-- pack), but a 3rd real bug remains open (the second pack's card
+		-- CONTENTS never populate, `G.pack_cards.cards` stays nil even once
+		-- positioning is correct) -- deliberately left disabled
+		-- (`should_double` hardcoded false) rather than ship a "Choose 1"
+		-- panel with nothing in it, which would be worse than this augment
+		-- doing nothing at all.
 	},
 	{
 		key = 'alchemists_dream', name = "Alchemist's Dream", tier = 3, category = 'Deck & Cards',
@@ -509,10 +558,10 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'cosmic_alignment', name = 'Cosmic Alignment', tier = 3, category = 'Trait & Emblem',
 		desc = 'Negative-edition odds on Rare/Legendary items are tripled for the rest of the match.',
-		-- NOT WIRED -- see objects/augments/shop_effects.lua's closing note:
-		-- poll_edition's real signature carries no rarity context to key this
-		-- off of, so there's no clean way to scope the boost to Rare/Legendary
-		-- items only.
+		-- CLOSED, next-session-plan-2.md: read directly via TFT.has_augment in
+		-- objects/augments/shop_effects.lua's CardArea:emplace hook (the same
+		-- one Lucky Star uses) -- checks rarity POST-creation instead of
+		-- trying to intercept poll_edition's own rarity-blind roll.
 	},
 
 	-- Remaining Shop & Items Silver
@@ -540,9 +589,13 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'high_roller', name = 'High Roller', tier = 3, category = 'Risky & Situational',
 		desc = "Every PvP round is winner-takes-all: the loser's money is halved (capped $100 transferred) on top of normal life loss.",
-		-- read in round_result.lua's loss branch -- see this file's own note
-		-- on why only the loser's half-money-loss is wired, not the winner's
-		-- credit.
+		-- WIRED, both halves. The loser's own client halves its own money in
+		-- round_result.lua's loss branch; the winner's client independently
+		-- computes and credits the identical amount in the win branch, reading
+		-- the loser's `dollars` snapshot off the same tft_round_result
+		-- broadcast both sides already send -- no separate broadcast needed.
+		-- Verified via a forced-score synthetic on_receive test with an exact
+		-- dollar-transfer match on both sides.
 	},
 	{
 		key = 'point_of_no_return', name = 'Point of No Return', tier = 3, category = 'Risky & Situational',
@@ -580,10 +633,15 @@ TFT.AugmentDefinitions = {
 	{
 		key = 'eye_for_an_eye', name = 'An Eye for An Eye', tier = 3, category = 'Defensive & PvP',
 		desc = 'Once per match, losing a PvP round redirects your damage to your opponent instead of you taking it.',
-		-- Self-side implemented (you take 0 damage that round) in
+		-- WIRED, both halves. Self-side (take 0 damage, mark used) is in
 		-- round_result.lua's loss branch. The redirect-TO-your-opponent half
-		-- isn't wired -- same cross-client gap as Counterpunch/High Roller's
-		-- credit half, flagged there.
+		-- rides the same tft_round_result broadcast (an `eye_for_an_eye_
+		-- available` flag): the WINNER's own client sees the loser had it
+		-- available and independently applies the redirected hit to itself in
+		-- its own win branch, through the same TFT.apply_own_defensive_
+		-- reductions/TFT.apply_life_loss helpers the normal loss path uses.
+		-- Verified via a forced-score synthetic on_receive test with an exact
+		-- life-total match on the redirect-receiving side.
 	},
 }
 

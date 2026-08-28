@@ -12,10 +12,19 @@
 -- resets each time the alive-player set changes size, since the circle method
 -- needs a stable N to rotate against).
 --
--- Returns: { pairs = {{a,b}, ...}, ghost = player_id_or_nil } -- `ghost` is set
--- when there's an odd number of alive players; that player has no real
--- opponent this round (architecture.md's ghost-board mechanic -- they face a
--- snapshot of someone else's board instead, handled by whoever calls this).
+-- Returns: { pairs = {{a,b}, ...}, ghost = player_id_or_nil,
+-- ghost_opponent_snapshot_of = player_id_or_nil } -- `ghost` is set when
+-- there's an odd number of alive players; that player has no real opponent
+-- this round (architecture.md's ghost-board mechanic -- they face a snapshot
+-- of someone else's board instead). `ghost_opponent_snapshot_of` names WHICH
+-- other alive player's most recent round-end snapshot the ghost plays
+-- against -- deterministically the fixed anchor player of the circle-method
+-- pairing among the remaining (non-ghost) ids, so every client picks the same
+-- one with no extra broadcast needed, same as the pairing itself. Actually
+-- resolving the ghost's round against that snapshot is
+-- objects/actions/round_result.lua's job (TFT._ghost_snapshots, populated by
+-- the tft_ghost_snapshot action every player broadcasts at the end of every
+-- round).
 function TFT.compute_pvp_pairing(alive_ids, round_number)
 	local ids = {}
 	for i, id in ipairs(alive_ids) do ids[i] = id end
@@ -37,6 +46,9 @@ function TFT.compute_pvp_pairing(alive_ids, round_number)
 
 	local n = #ids
 	if n == 0 then
+		-- Only the ghost is alive at all -- a match that should already be
+		-- over (last-player-standing), not a real ghost round. No snapshot
+		-- opponent possible.
 		return { pairs = {}, ghost = ghost }
 	end
 	if n == 1 then
@@ -67,7 +79,7 @@ function TFT.compute_pvp_pairing(alive_ids, round_number)
 		hi = hi - 1
 	end
 
-	return { pairs = pairs_out, ghost = ghost }
+	return { pairs = pairs_out, ghost = ghost, ghost_opponent_snapshot_of = ghost and fixed or nil }
 end
 
 -- Given a computed pairing and a player_id, returns that player's opponent id

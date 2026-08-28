@@ -122,6 +122,12 @@ function CardArea:emplace(card, location, stay_flipped)
 	local ret = _tft_orig_emplace(self, card, location, stay_flipped)
 	if self == G.jokers and TFT.is_run_active() and card and card.ability and card.ability.set == 'Joker' then
 		pcall(TFT.try_merge_duplicate_joker, card)
+		-- Shared Joker Pool (objects/actions/joker_ownership.lua, may not exist
+		-- yet if MPAPI never finished loading -- guarded, matching hooks.lua's
+		-- own TFT.restart_round_timer guard): every Joker landing here changes
+		-- this player's owned-copy summary, whether it merged into an existing
+		-- copy or took a fresh slot.
+		if TFT.broadcast_joker_ownership then pcall(TFT.broadcast_joker_ownership) end
 	end
 	return ret
 end

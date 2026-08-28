@@ -13,7 +13,25 @@
 -- picked as a reasonable middle ground.
 TFT.CAROUSEL_OPTION_COUNT = 4
 
+-- Dispatcher (next-session-plan-4.md item 2): real multiplayer matches get an
+-- actual shared-pool turn-based draft (objects/actions/carousel_draft.lua) --
+-- everything below this function is the ORIGINAL single-player-only flow
+-- (independent guaranteed picks, no draft, no contention), kept unchanged and
+-- still used for real solo play and as a safety fallback if a multiplayer
+-- state is somehow missing its lobby.
 function TFT.open_carousel(round_def)
+	local state = TFT.get_state()
+	if state and state.is_multiplayer then
+		local lobby = MPAPI.get_current_lobby and MPAPI.get_current_lobby()
+		if lobby then
+			TFT.open_carousel_draft(round_def)
+			return
+		end
+	end
+	TFT.open_carousel_solo(round_def)
+end
+
+function TFT.open_carousel_solo(round_def)
 	local state = TFT.get_state()
 	if not state then return end
 
@@ -21,11 +39,17 @@ function TFT.open_carousel(round_def)
 	-- the same real bug, caught live) -- indexed access instead.
 	local tier_range = TFT.carousel_tier_range(round_def.stage)
 	local min_tier, max_tier = tier_range[1], tier_range[2]
+	-- Consumable-odds-by-level (next-session-plan-4.md item 6): same weighting
+	-- domain/consumable_odds.lua applies to the real shop, via the same
+	-- repeated-slot-array technique -- built once per Carousel offer rather
+	-- than per-option, since the level (and therefore the weights) doesn't
+	-- change mid-offer.
+	local weighted_consumable_pool = TFT.apply_consumable_weights(TFT.CarouselConsumablePool, state.level)
 	local options = {}
 	for i = 1, TFT.CAROUSEL_OPTION_COUNT do
 		local seed_suffix = 'tft_carousel_s' .. round_def.stage .. '_' .. i .. '_' .. tostring(G.GAME.seed)
 		local joker_key = TFT.random_joker_in_tier_range(min_tier, max_tier, seed_suffix .. '_j')
-		local consumable_key = pseudorandom_element(TFT.CarouselConsumablePool, pseudoseed(seed_suffix .. '_c'))
+		local consumable_key = pseudorandom_element(weighted_consumable_pool, pseudoseed(seed_suffix .. '_c'))
 		if joker_key and consumable_key then
 			table.insert(options, {
 				joker_key = joker_key,
