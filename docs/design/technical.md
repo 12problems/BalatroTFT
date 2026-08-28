@@ -180,15 +180,31 @@ and not free-running asynchrony:
   advance-to-next-round signal** — a single clear trigger point, rather than every client
   independently guessing when to transition (which risked round-numbering desync).
 
-**Proposed per-round-type timer defaults** (first draft, needs playtesting like every
-other number in this plan):
+**Per-round-type timer defaults** -- IMPLEMENTED 2026-08-28 (domain/round_timers.lua),
+values confirmed as the real, shipped numbers (not just a first draft anymore):
 
 | Round type | Base timer | Notes |
 |---|---|---|
-| PvE / PvP (hand-playing) | **45s at Stage 1, 65s at Stage 2, 90s from Stage 3 onward** | Ramps up as hands get more complex, + 20s hurry-up window once ≥75% of alive players are done, per your note |
-| Carousel | 20s | Just a pick, should be fast |
-| Shop | 60s | Explicit "Ready" button lets players close it early; same hurry-up logic |
-| Augment pick | **30s** | Confirmed |
+| PvE / PvP (hand-playing) | **45s at Stage 1, 65s at Stage 2, 90s from Stage 3 onward** | Real countdown, real enforcement: time running out forces the round to end right now via the same safe `end_round()` mechanism a real win/loss uses, banking whatever chips the player had scored so far (never auto-played or zeroed, per this section's own rule above) |
+| Carousel | Own real per-turn timer, unchanged | Already implemented separately (objects/actions/carousel_draft.lua, `CAROUSEL_PRE_TIMER_SECONDS`/`CAROUSEL_TURN_TIMER_SECONDS`) as a host-authoritative shared-pool turn timer, not a per-player solo countdown -- materially different shape from the other rows here, so not unified with them. Now has a real live-ticking on-screen countdown too (previously static "Your turn!" text). |
+| Shop | 60s | Force-leaves the shop the same way the real "Next Round" button does once time's up; a player can of course still leave earlier |
+| Augment pick | 30s | Auto-picks the first offered option once time's up (checkpoint offers are per-player/local, so no host authority needed, unlike Carousel's shared pool) |
+
+**Scope reduction versus the original proposal above, flagged explicitly**: the
+host-broadcast shared `round_start` timestamp / lobby-wide soft-barrier design described
+earlier in this section was NOT implemented -- it depends on a real, shared,
+host-authoritative notion of "which round is everyone on right now," which this
+project's actual round-flow architecture doesn't have (every client advances its own
+`state.round_index` independently the instant THEY personally clear their own blind --
+this was true before the timer work and remains true now; PvP pairing has always just
+assumed players roughly keep pace). What's implemented instead: each client runs its
+own honest, real countdown against its own current round/shop/checkpoint, using the
+budgets above, with real enforcement. The secondary "hurry-up" window (a shorter bonus
+timer once ≥75% of the alive lobby has already finished) is NOT implemented for the
+same reason -- it needs a shared "who else has finished THIS round" signal that doesn't
+exist. Building the full host-authoritative round-advance barrier this table originally
+envisioned is a materially larger architectural change than "add a timer" and would be
+a good candidate for its own dedicated session.
 
 ## Trait & Augment Calculation Hooks
 

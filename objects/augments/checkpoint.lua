@@ -43,11 +43,18 @@ function TFT.open_augment_checkpoint(round_def)
 		return
 	end
 
+	-- Real timer (domain/round_timers.lua, full timer functionality
+	-- 2026-08-28), multiplayer only, matching the round/shop timers' own
+	-- scope -- see TFT.round_flow_poll's enforcement (objects/round_flow/
+	-- poll.lua) and TFT.checkpoint_timer_text's live display below.
+	local deadline_at = (state.is_multiplayer and state.timer_enabled ~= false)
+		and (love.timer.getTime() + TFT.AUGMENT_PICK_TIMER_SECONDS) or nil
 	state.pending_augment_offer = {
 		tier = tier,
 		checkpoint_index = checkpoint_index,
 		option_keys = TFT.roll_augment_option_keys(pool, 3, checkpoint_index),
 		rerolled = false,
+		deadline_at = deadline_at,
 	}
 	TFT.render_augment_checkpoint_overlay()
 end
@@ -95,6 +102,7 @@ function TFT.render_augment_checkpoint_overlay()
 		rows = rows,
 		footer_rows = footer,
 		no_esc = true, -- must pick, matches "not skippable" design intent
+		timer_ref = offer.deadline_at and { t = TFT, v = 'checkpoint_timer_text' } or nil,
 	})
 end
 

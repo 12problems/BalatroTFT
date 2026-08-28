@@ -23,6 +23,24 @@ function TFT.build_picker_node_tree(opts)
 			{ n = G.UIT.T, config = { text = opts.subtitle, scale = 0.5, colour = opts.subtitle_colour or G.C.WHITE } },
 		} })
 	end
+	-- Live ticking countdown (full timer functionality, 2026-08-28): a
+	-- DynaText bound to a {ref_table, ref_value} pair, same binding style
+	-- hud.lua's own persistent timer uses -- updates every frame on its own
+	-- once the bound field changes, no overlay rebuild needed. `timer_ref`
+	-- is `{ t = <table>, v = <field name> }`; the caller (checkpoint.lua,
+	-- carousel_draft.lua) is responsible for refreshing that field every
+	-- frame from round_flow_poll.
+	if opts.timer_ref then
+		table.insert(nodes, { n = G.UIT.R, config = { align = 'cm', padding = 0.05 }, nodes = {
+			{ n = G.UIT.O, config = { object = DynaText({
+				string = { { ref_table = opts.timer_ref.t, ref_value = opts.timer_ref.v } },
+				colours = { G.C.RED },
+				shadow = true,
+				font = G.LANGUAGES['en-us'].font,
+				scale = 0.4,
+			}) } },
+		} })
+	end
 	for _, row in ipairs(opts.rows or {}) do
 		-- A row can be a fully custom node tree (e.g. stage_overview.lua's real
 		-- blind-card rows) instead of a plain clickable button -- used for

@@ -1,3 +1,12 @@
+# STATUS UPDATE (2026-08-27): priorities 1-3 below are now DONE and live-
+# verified (2-instance where relevant). See docs/design/next-session-plan-2.md
+# for what's actually left: priority 4 (rank visuals) was deliberately SKIPPED
+# after investigation found no safe precedent in this codebase for it (see
+# that doc for why, and what was tried); priority 5 (testing sweep) is
+# partially done (the 5 flagged highest-risk augments rigorously verified via
+# forced-input tests, plus a full-73-simultaneous no-crash regression check),
+# not every one of the 73 individually. Read next-session-plan-2.md first.
+
 # Next Development Session — Plan for an Unmanaged/Autonomous Run
 
 Written 2026-08-26, at the end of a long supervised session that built: the full round/

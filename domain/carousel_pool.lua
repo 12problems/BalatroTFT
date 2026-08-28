@@ -34,3 +34,43 @@ TFT.CarouselTierRangeByStage = {
 function TFT.carousel_tier_range(stage)
 	return TFT.CarouselTierRangeByStage[stage] or { 1, 3 }
 end
+
+-- Power-level bias within a stage's own tier range (next-session-plan-4.md
+-- item 2.4a: "bias it according to stage" using the existing Power Tier
+-- system, NOT a new metric and NOT pre-Ranked copies -- explicitly rejected
+-- alternatives, see the plan doc). First-draft linear ramp, same flagged-
+-- assumption convention as the tier range table above (which was itself an
+-- unspecified "clean linear ramp" the first time this file was written):
+-- 0 bias at stage 2 (uniform across the range) up to a flat max at stage 7
+-- (heavily favouring the top tier in range).
+TFT.CAROUSEL_BIAS_MAX = 3
+function TFT.carousel_bias_factor(stage)
+	local progress = (stage - 2) / (7 - 2)
+	progress = math.max(0, math.min(1, progress))
+	return progress * TFT.CAROUSEL_BIAS_MAX
+end
+
+-- Weighted version of TFT.random_joker_in_tier_range (rarity_odds.lua) --
+-- same repeated-candidate-list technique domain/consumable_odds.lua's
+-- TFT.apply_consumable_weights uses (build a list with each tier's jokers
+-- repeated proportional to its weight, then one uniform pick over the
+-- expanded list), rather than a second, different weighting mechanism.
+TFT.CAROUSEL_BIAS_RESOLUTION = 10
+function TFT.random_joker_in_tier_range_biased(min_tier, max_tier, stage, seed)
+	local by_tier = TFT.jokers_by_power_tier()
+	local bias = TFT.carousel_bias_factor(stage)
+	local candidates = {}
+	for tier = min_tier, max_tier do
+		local weight = 1 + bias * (tier - min_tier)
+		local copies = math.floor(weight * TFT.CAROUSEL_BIAS_RESOLUTION + 0.5)
+		for _, key in ipairs(by_tier[tier] or {}) do
+			for _ = 1, copies do
+				table.insert(candidates, key)
+			end
+		end
+	end
+	if #candidates == 0 then
+		return TFT.random_joker_in_tier_range(min_tier, max_tier, seed)
+	end
+	return pseudorandom_element(candidates, pseudoseed(seed or 'tft_carousel_joker_biased'))
+end

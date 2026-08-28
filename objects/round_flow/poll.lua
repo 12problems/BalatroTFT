@@ -17,6 +17,32 @@ function TFT.round_flow_poll()
 		pcall(TFT.ensure_traits_engine_joker)
 	end
 
+	-- Level/XP HUD display (objects/round_flow/hud.lua) -- same "defer until
+	-- the real object exists" pattern as the traits engine injection just
+	-- above, since attaching a UIBox child to G.deck from inside
+	-- Game:start_run itself is exactly the kind of thing that already hung
+	-- this game once (hooks.lua's own comment on that real crash).
+	if not state.deck_level_display_attached and G.deck then
+		state.deck_level_display_attached = true
+		pcall(TFT.attach_deck_level_display)
+	end
+
+	-- Host-configured match settings (next-session-plan-4.md item 5) --
+	-- deferred the same way, since bonus money needs G.GAME.dollars to
+	-- already be initialized by the real start_run flow. Consumed exactly
+	-- once per run (TFT._pending_match_settings cleared immediately) --
+	-- state.timer_enabled itself persists as real run state for every later
+	-- round's TFT.restart_round_timer call to read.
+	if TFT._pending_match_settings and not state.match_settings_applied then
+		state.match_settings_applied = true
+		local settings = TFT._pending_match_settings
+		TFT._pending_match_settings = nil
+		state.timer_enabled = settings.timer_enabled
+		if settings.bonus_money and settings.bonus_money > 0 then
+			ease_dollars(settings.bonus_money)
+		end
+	end
+
 	local prev_state = state.last_seen_state
 	local cur_state = G.STATE
 
@@ -33,8 +59,65 @@ function TFT.round_flow_poll()
 		-- SHOP-state transition) correctly re-arms it.
 		if cur_state == G.STATES.SHOP then
 			state.vintage_collection_used_this_visit = false
+			-- Real shop timer (domain/round_timers.lua, full timer
+			-- functionality 2026-08-28) -- multiplayer only, same scope as
+			-- the hand-playing round timer above.
+			if state.is_multiplayer and state.timer_enabled ~= false then
+				state.shop_deadline_at = love.timer.getTime() + TFT.SHOP_TIMER_SECONDS
+				state.shop_timed_out = false
+			else
+				state.shop_deadline_at = nil
+			end
+		elseif prev_state == G.STATES.SHOP then
+			state.shop_deadline_at = nil
 		end
 		state.last_seen_state = cur_state
+	end
+
+	-- Real round-timer enforcement (domain/round_timers.lua, full timer
+	-- functionality 2026-08-28): once time's up for a real hand-playing
+	-- (PvE/PvP) round, force it to end RIGHT NOW with whatever chips are
+	-- currently banked -- reuses the exact same safe end_round() mechanism
+	-- (objects/round_flow/hooks.lua's own end_round hook, already proven for
+	-- real wins/losses/PvP-miss suppression) so every downstream system
+	-- (round_result broadcast, elimination, round advance) picks this up
+	-- completely normally, with zero special-casing needed -- the player's
+	-- TRUE banked score (G.GAME.chips) is exactly what gets broadcast,
+	-- matching the design doc's own "currently-banked score stands, never
+	-- auto-played or zeroed" rule for free.
+	if state.round_deadline_at and love.timer.getTime() >= state.round_deadline_at
+		and state.round_timed_out_for_index ~= state.round_index
+		and G.GAME.blind and G.GAME.blind.in_blind then
+		state.round_timed_out_for_index = state.round_index
+		state.round_deadline_at = nil
+		TFT.sendDebugMessage('Round timer expired at round_index ' .. state.round_index
+			.. ' -- forcing round end with ' .. tostring(G.GAME.chips) .. ' chips banked')
+		pcall(end_round)
+	end
+
+	-- Real shop-timer enforcement: force-leave the shop the same way the real
+	-- "Next Round" button does (G.FUNCS.toggle_shop) once time's up. Guarded
+	-- to the SHOP state itself so this can't fire on some later screen still
+	-- holding a stale shop_deadline_at.
+	if state.shop_deadline_at and love.timer.getTime() >= state.shop_deadline_at
+		and not state.shop_timed_out and cur_state == G.STATES.SHOP then
+		state.shop_timed_out = true
+		state.shop_deadline_at = nil
+		TFT.sendDebugMessage('Shop timer expired -- leaving shop automatically')
+		pcall(function() G.FUNCS.toggle_shop({}) end)
+	end
+
+	-- Real Augment Checkpoint timer enforcement (domain/round_timers.lua):
+	-- auto-picks the first offered option once time's up, same
+	-- "least-punishing, never leaves the player stuck" spirit as the
+	-- Carousel draft's own established timeout-auto-pick
+	-- (objects/actions/carousel_draft.lua) -- checkpoint offers are
+	-- per-player/local (no shared pool to contend over), so this needs no
+	-- host authority or broadcast at all, unlike Carousel's real draft.
+	if state.pending_augment_offer and state.pending_augment_offer.deadline_at
+		and love.timer.getTime() >= state.pending_augment_offer.deadline_at then
+		TFT.sendDebugMessage('Augment Checkpoint timer expired -- auto-picking option 1')
+		pcall(function() G.FUNCS.tft_pick_augment_1() end)
 	end
 
 	-- Rainy Day Fund (Silver, Economic): once per stage, if you'd hit $0,
@@ -100,8 +183,21 @@ function TFT.round_flow_advance()
 	-- immediately after this point). See objects/round_flow/pvp.lua and
 	-- objects/actions/round_result.lua for the collection/damage side.
 	local just_completed = TFT.current_round_def()
+
+	-- Perfect Game (objects/augments/perfect_game.lua): same "read G.GAME.chips
+	-- before it resets" timing constraint as the PvP broadcast just below.
+	pcall(TFT.check_perfect_game, just_completed)
+
 	if state.is_multiplayer and just_completed and just_completed.round_type == TFT.RoundType.PVP then
 		pcall(TFT.broadcast_round_result, G.GAME.chips or 0)
+	end
+
+	-- Ghost-board snapshot (objects/actions/round_result.lua): kept fresh
+	-- after every real scored round (PvE or PvP -- not Carousel, which has no
+	-- chip score at all), so whoever ends up ghosted on a future odd-lobby
+	-- PvP round has a reasonably recent score on file to play against.
+	if state.is_multiplayer and just_completed and just_completed.round_type ~= TFT.RoundType.CAROUSEL then
+		pcall(TFT.broadcast_ghost_snapshot, G.GAME.chips or 0)
 	end
 
 	TFT.grant_passive_xp()
@@ -159,8 +255,16 @@ function TFT.grant_passive_xp()
 	state.xp = state.xp + TFT.PASSIVE_XP_PER_ROUND
 	local new_level = TFT.level_for_xp(state.xp)
 	if new_level > state.level then
-		TFT.apply_level_up(state.level + 1, new_level)
+		local from_level = state.level + 1
+		-- Set BEFORE apply_level_up (which may open a real picker overlay,
+		-- objects/round_flow/level_rewards.lua) rather than after, so the HUD
+		-- level text and any reward-eligibility check made while that overlay
+		-- is up already reflects the new level, not the stale one.
 		state.level = new_level
+		TFT.apply_level_up(from_level, new_level)
+		if state.is_multiplayer then
+			pcall(TFT.broadcast_xp_level_change, new_level)
+		end
 	end
 end
 
@@ -168,10 +272,34 @@ end
 -- checkpoint.lua). Called right as round_index moves onto the checkpoint
 -- round, before the player plays it -- matches architecture.md's "before round
 -- 2-1" phrasing.
+--
+-- DEFERS instead of opening immediately if a level-up reward picker
+-- (objects/round_flow/level_rewards.lua) is already queued/showing -- both
+-- use the same one-at-a-time G.FUNCS.overlay_menu, and a level-up can
+-- coincide with a checkpoint round on the same round transition (checkpoints
+-- are fixed to stages 2/4/6; level-ups are XP-paced and can land anywhere).
+-- TFT.show_next_level_reward() calls TFT.open_deferred_checkpoint_if_any()
+-- once its own queue drains, which is what actually opens this checkpoint.
 function TFT.announce_checkpoint_if_due()
 	local round_def = TFT.current_round_def()
 	if not round_def or not round_def.is_checkpoint then return end
+	local state = TFT.get_state()
+	if state and state.pending_level_reward_queue and #state.pending_level_reward_queue > 0 then
+		state.pending_checkpoint_round_def = round_def
+		return
+	end
 	TFT.sendDebugMessage('Augment checkpoint ' .. round_def.checkpoint_tier_index
 		.. ' due at stage ' .. round_def.stage .. '-' .. round_def.round_in_stage)
 	TFT.open_augment_checkpoint(round_def)
+end
+
+function TFT.open_deferred_checkpoint_if_any()
+	local state = TFT.get_state()
+	local round_def = state and state.pending_checkpoint_round_def
+	if round_def then
+		state.pending_checkpoint_round_def = nil
+		TFT.sendDebugMessage('Augment checkpoint ' .. round_def.checkpoint_tier_index
+			.. ' due at stage ' .. round_def.stage .. '-' .. round_def.round_in_stage .. ' (deferred for a level reward)')
+		TFT.open_augment_checkpoint(round_def)
+	end
 end
