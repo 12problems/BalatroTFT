@@ -17,6 +17,13 @@ function TFT.round_flow_poll()
 		pcall(TFT.ensure_traits_engine_joker)
 	end
 
+	-- Trait Stickers (objects/traits/stickers.lua): keeps every owned
+	-- Joker's sticker set in sync with its live trait tags every frame --
+	-- cheap given a small owned-Joker count, and covers every real
+	-- tag-changing event (a new Joker bought, Grand Emblem/Apprentice's
+	-- Charm/Trait Heart picked) without a dedicated hook per call site.
+	pcall(TFT.sync_all_trait_stickers)
+
 	-- Level/XP HUD display (objects/round_flow/hud.lua) -- same "defer until
 	-- the real object exists" pattern as the traits engine injection just
 	-- above, since attaching a UIBox child to G.deck from inside
@@ -59,6 +66,10 @@ function TFT.round_flow_poll()
 		-- SHOP-state transition) correctly re-arms it.
 		if cur_state == G.STATES.SHOP then
 			state.vintage_collection_used_this_visit = false
+			-- Buy XP button (objects/round_flow/shop_xp_buy.lua): cost escalates
+			-- per purchase within a visit, same as vanilla's own reroll_cost --
+			-- reset on every fresh shop entry.
+			state.xp_buy_count_this_visit = 0
 			-- Real shop timer (domain/round_timers.lua, full timer
 			-- functionality 2026-08-28) -- multiplayer only, same scope as
 			-- the hand-playing round timer above.
@@ -244,15 +255,19 @@ function TFT.round_flow_advance()
 		-- colours and the round timer both depend on the round that JUST
 		-- became current, so both refresh here rather than waiting on the
 		-- next screen render.
-		pcall(TFT.refresh_hud_stage_display)
+		pcall(TFT.refresh_stage_roadmap_display)
 		pcall(TFT.restart_round_timer)
 	end
 end
 
-function TFT.grant_passive_xp()
+-- Shared by passive per-round XP and any other real XP source (the shop's
+-- Buy XP button, objects/round_flow/shop_xp_buy.lua) -- extracted so both
+-- go through the identical level-up-check-and-apply path rather than
+-- duplicating it.
+function TFT.grant_xp(amount)
 	local state = TFT.get_state()
 	if not state then return end
-	state.xp = state.xp + TFT.PASSIVE_XP_PER_ROUND
+	state.xp = state.xp + amount
 	local new_level = TFT.level_for_xp(state.xp)
 	if new_level > state.level then
 		local from_level = state.level + 1
@@ -266,6 +281,10 @@ function TFT.grant_passive_xp()
 			pcall(TFT.broadcast_xp_level_change, new_level)
 		end
 	end
+end
+
+function TFT.grant_passive_xp()
+	TFT.grant_xp(TFT.PASSIVE_XP_PER_ROUND)
 end
 
 -- Checkpoint (augment pick): opens the real picker (objects/augments/

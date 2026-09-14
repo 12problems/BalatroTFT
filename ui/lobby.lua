@@ -68,6 +68,14 @@ TFT.build_pre_lobby_ui = function()
 	}
 end
 
+-- Plain horizontal gap between two bottom-bar pill widgets -- matches
+-- BalatroMultiplayer's own ui/_common/spacer.lua convention (a blank
+-- G.UIT.C/R node of fixed size) rather than leaning on row padding, since
+-- padding here needs to stay small for the row's own outer edges.
+local function spacer(w)
+	return { n = G.UIT.C, config = { minw = w or 0.15 }, nodes = {} }
+end
+
 local function deck_display_name(key)
 	local center = G.P_CENTERS[key]
 	return (center and center.name) or key
@@ -77,7 +85,13 @@ end
 -- Guests see the same label with the current value but no buttons -- the
 -- config table's own `nodes` just omits the button column entirely for them,
 -- rather than showing disabled buttons that would invite clicking.
-local function build_setting_row(label_text, value_text, is_host, prev_button, next_button)
+--
+-- `accent_colour` (optional) draws the value as a small filled chip in that
+-- colour instead of plain gold text -- used for the Deck row so it reads as
+-- its own pill-button, echoing the real BalatroMultiplayer lobby's separate
+-- purple "Deck" button (docs/design/next-session-plan-6.md's lobby-UI pass,
+-- 2026-09-04) without having to pull Deck out into its own standalone widget.
+local function build_setting_row(label_text, value_text, is_host, prev_button, next_button, accent_colour)
 	local nodes = {
 		{ n = G.UIT.C, config = { minw = 2.2, align = 'cl' }, nodes = {
 			{ n = G.UIT.T, config = { text = label_text, scale = 0.35, colour = G.C.UI.TEXT_LIGHT } },
@@ -86,8 +100,8 @@ local function build_setting_row(label_text, value_text, is_host, prev_button, n
 	if is_host and prev_button then
 		table.insert(nodes, { n = G.UIT.C, config = { padding = 0.03 }, nodes = { UIBox_button({ button = prev_button, label = { '<' }, colour = G.C.GREY, minw = 0.4, scale = 0.35 }) } })
 	end
-	table.insert(nodes, { n = G.UIT.C, config = { minw = 2, align = 'cm' }, nodes = {
-		{ n = G.UIT.T, config = { text = value_text, scale = 0.35, colour = G.C.GOLD } },
+	table.insert(nodes, { n = G.UIT.C, config = { minw = 2, align = 'cm', padding = accent_colour and 0.05 or nil, r = accent_colour and 0.08 or nil, colour = accent_colour }, nodes = {
+		{ n = G.UIT.T, config = { text = value_text, scale = 0.35, colour = accent_colour and G.C.WHITE or G.C.GOLD } },
 	} })
 	if is_host and next_button then
 		table.insert(nodes, { n = G.UIT.C, config = { padding = 0.03 }, nodes = { UIBox_button({ button = next_button, label = { '>' }, colour = G.C.GREY, minw = 0.4, scale = 0.35 }) } })
@@ -104,9 +118,13 @@ local function build_settings_panel(lobby)
 	-- between fitting on screen and overlapping the roster grid.
 	return { n = G.UIT.C, config = { align = 'cm', padding = 0.06, r = 0.1, colour = G.C.BLACK, emboss = 0.05 }, nodes = {
 		{ n = G.UIT.R, config = { align = 'cm', padding = 0.02 }, nodes = {
-			{ n = G.UIT.T, config = { text = 'Match Settings', scale = 0.35, colour = G.C.UI.TEXT_LIGHT } },
+			-- Orange text nods to the real BalatroMultiplayer lobby's orange
+			-- "Lobby Options" button -- this panel stays inline (always visible,
+			-- no separate overlay) rather than gated behind a button, so the
+			-- colour is the cheapest way to borrow that visual language.
+			{ n = G.UIT.T, config = { text = 'Lobby Options', scale = 0.35, colour = G.C.ORANGE } },
 		} },
-		build_setting_row('Deck', deck_display_name(TFT.SelectableDecks[s.deck_index]), is_host, 'tft_cycle_deck_prev', 'tft_cycle_deck_next'),
+		build_setting_row('Deck', deck_display_name(TFT.SelectableDecks[s.deck_index]), is_host, 'tft_cycle_deck_prev', 'tft_cycle_deck_next', G.C.PURPLE),
 		build_setting_row('Stake', 'Stake ' .. s.stake, is_host, 'tft_cycle_stake_prev', 'tft_cycle_stake_next'),
 		build_setting_row('Bonus Money', '+$' .. s.bonus_money, is_host, 'tft_cycle_bonus_money_prev', 'tft_cycle_bonus_money_next'),
 		is_host
@@ -139,13 +157,41 @@ end
 -- more stacked rows -- there's ample unused horizontal space (grid width is
 -- ~8.2 of the room's 20 units), so trading unused width for saved height is
 -- free here.
+-- Non-clickable "pill" used where the real BalatroMultiplayer lobby shows a
+-- greyed-out Disableable_Button (e.g. Start disabled until 2+ players/guest
+-- ready) -- confirmed via that mod's real ui/_common/disableable_button.lua:
+-- a disabled button there is recoloured to exactly G.C.UI.BACKGROUND_INACTIVE
+-- with G.C.UI.TEXT_INACTIVE text, not just plain unstyled text. Reusing those
+-- same two colours here keeps our "not ready yet" states visually consistent
+-- with theirs instead of looking like plain UI copy.
+local function build_status_badge(text)
+	return { n = G.UIT.R, config = { align = 'cm', padding = 0.1, r = 0.1, minw = 3, minh = 1, colour = G.C.UI.BACKGROUND_INACTIVE }, nodes = {
+		{ n = G.UIT.T, config = { text = text, scale = 0.3, colour = G.C.UI.TEXT_INACTIVE } },
+	} }
+end
+
+-- View/Copy Code as their own small pill buttons -- replaces the old plain
+-- "Code: XXXX" text line, matching the real BalatroMultiplayer lobby's own
+-- ui/lobby/lobby_code_buttons.lua (green "View Code" + purple "Copy Code",
+-- stacked). View Code toggles reveal via G.FUNCS.tft_view_code below, same
+-- toggle-in-place pattern as that mod's real G.FUNCS.view_code.
+local function build_lobby_code_buttons()
+	return { n = G.UIT.C, config = { align = 'cm', padding = 0.02 }, nodes = {
+		{ n = G.UIT.T, config = { text = 'Lobby Code', scale = 0.25, colour = G.C.UI.TEXT_LIGHT } },
+		UIBox_button({ id = 'tft_view_code_button', button = 'tft_view_code', label = { 'View Code' }, colour = G.C.PALE_GREEN, minw = 2, minh = 0.5, scale = 0.3 }),
+		UIBox_button({ button = 'tft_copy_code', label = { 'Copy Code' }, colour = G.C.PURPLE, minw = 2, minh = 0.5, scale = 0.3 }),
+	} }
+end
+
 TFT.build_in_lobby_ui = function()
 	local lobby = MPAPI.get_current_lobby and MPAPI.get_current_lobby()
 	local nodes = {}
 	if lobby then
+		-- The code itself no longer sits here as plain text -- it's now behind
+		-- the View/Copy Code pill buttons in the bottom bar (build_lobby_code_
+		-- buttons), matching the real BalatroMultiplayer lobby's own layout.
 		table.insert(nodes, { n = G.UIT.R, config = { align = 'cm', padding = 0.03 }, nodes = {
 			{ n = G.UIT.T, config = { text = 'BalatroTFT Lobby', scale = 0.4, colour = G.C.UI.TEXT_LIGHT } },
-			{ n = G.UIT.T, config = { text = '   Code: ' .. tostring(lobby.code), scale = 0.35, colour = G.C.GOLD } },
 		} })
 		-- CORRECTED via live crash diagnosis: MPAPI.create_lobby_ui()'s return
 		-- value is a wrapper with a `.node` field that's a real node tree meant
@@ -161,19 +207,31 @@ TFT.build_in_lobby_ui = function()
 			lobby_ui_ref.node,
 		} })
 
-		local bottom_row_nodes = { build_settings_panel(lobby) }
+		-- Bottom bar reworked to visually match the real BalatroMultiplayer
+		-- lobby screen (explicit reference screenshot, 2026-09-04): one dark
+		-- rounded panel (colour=L_BLACK, r=0.1, emboss=0.1, same convention
+		-- that mod's own lobby row uses) holding a left-to-right sequence of
+		-- pill buttons -- Start/status, Lobby Options (settings), Lobby Code
+		-- (view/copy), Leave Lobby -- instead of the old plain stacked rows.
+		local bottom_row_nodes = {}
 		if lobby.is_host then
 			local player_count = 0
 			for _ in pairs(lobby._players or {}) do player_count = player_count + 1 end
 			if player_count >= 2 then
-				table.insert(bottom_row_nodes, UIBox_button({ button = 'tft_start_game', label = { 'Start Game' }, colour = G.C.RED, minw = 4 }))
+				table.insert(bottom_row_nodes, UIBox_button({ button = 'tft_start_game', label = { 'Start Game' }, colour = G.C.RED, minw = 3, minh = 1 }))
 			else
-				table.insert(bottom_row_nodes, { n = G.UIT.T, config = { text = 'Need at least 2 players to start', scale = 0.3, colour = G.C.UI.TEXT_LIGHT } })
+				table.insert(bottom_row_nodes, build_status_badge('Need 2+ players'))
 			end
 		else
-			table.insert(bottom_row_nodes, { n = G.UIT.T, config = { text = 'Waiting for host to start...', scale = 0.3, colour = G.C.UI.TEXT_LIGHT } })
+			table.insert(bottom_row_nodes, build_status_badge('Waiting for host...'))
 		end
-		table.insert(nodes, { n = G.UIT.R, config = { align = 'cm', padding = 0.05 }, nodes = bottom_row_nodes })
+		table.insert(bottom_row_nodes, spacer(0.2))
+		table.insert(bottom_row_nodes, build_settings_panel(lobby))
+		table.insert(bottom_row_nodes, spacer(0.2))
+		table.insert(bottom_row_nodes, build_lobby_code_buttons())
+		table.insert(bottom_row_nodes, spacer(0.2))
+		table.insert(bottom_row_nodes, UIBox_button({ button = 'tft_leave_lobby', label = { 'Leave', 'Lobby' }, colour = G.C.RED, minw = 2, minh = 1, scale = 0.35, col = true }))
+		table.insert(nodes, { n = G.UIT.R, config = { align = 'cm', padding = 0.15, r = 0.1, emboss = 0.1, colour = G.C.L_BLACK }, nodes = bottom_row_nodes })
 	end
 	return { n = G.UIT.ROOT, config = { align = 'cm', colour = G.C.CLEAR }, nodes = nodes }
 end
@@ -213,6 +271,45 @@ end
 
 G.FUNCS.tft_join_lobby_from_input = function()
 	join_with_code(TFT.join_code_input.code)
+end
+
+-- View Code: toggles the button's own label between "View Code" and the real
+-- code in place -- exact same toggle-in-place pattern as BalatroMultiplayer's
+-- own real G.FUNCS.view_code (confirmed via source read: it swaps
+-- e.children[1].children[1].config.text and e.config.colour directly, then
+-- calls e.UIBox:recalculate() rather than rebuilding the whole lobby UI).
+G.FUNCS.tft_view_code = function(e)
+	local lobby = MPAPI.get_current_lobby and MPAPI.get_current_lobby()
+	if not lobby then return end
+	local text_config = e.children[1].children[1].config
+	if text_config.text ~= tostring(lobby.code) then
+		e.config.colour = G.C.ETERNAL
+		text_config.text = tostring(lobby.code)
+	else
+		e.config.colour = G.C.PALE_GREEN
+		text_config.text = 'View Code'
+	end
+	e.UIBox:recalculate()
+end
+
+G.FUNCS.tft_copy_code = function()
+	local lobby = MPAPI.get_current_lobby and MPAPI.get_current_lobby()
+	if not lobby or not lobby.code then return end
+	if love.system and love.system.setClipboardText then
+		love.system.setClipboardText(lobby.code)
+	end
+end
+
+-- Real functional gap this pass closes, not just cosmetic: there was
+-- previously no way to leave a lobby from the UI at all short of alt-tabbing
+-- out. lobby:leave() (api/lobby/state.lua) is MPAPI's own real teardown --
+-- it fires MPAPI.LobbyEvent.DISCONNECTED, which TFT.setup_lobby_events above
+-- already handles (clears TFT.lobby.ref), so no extra cleanup is needed here.
+G.FUNCS.tft_leave_lobby = function()
+	local lobby = MPAPI.get_current_lobby and MPAPI.get_current_lobby()
+	if lobby and lobby.leave then
+		lobby:leave()
+	end
 end
 
 function TFT.setup_lobby_events(lobby)

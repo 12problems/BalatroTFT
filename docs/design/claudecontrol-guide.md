@@ -7,11 +7,12 @@ visual-token budget and should be the exception, not the default verification st
 see "When you actually need a screenshot" at the end.
 
 This doc assumes the machine setup already documented in Claude's own memory
-(`claudecontrol-testing-setup.md`, `balatro-multi-instance-launch.md`) — junctioned mod
-deployment, the MPAPI dev-auth override in `core.lua`, the local MP server. Read those
-first if starting completely cold. This doc is the layer on top: how to actually **drive**
-BalatroTFT once instances are up, and BalatroTFT-specific gotchas that aren't true of
-vanilla Balatro or other BMP-family mods.
+(`claudecontrol-testing-setup.md`, `balatro-multi-instance-launch.md`) — real-copy mod
+deployment via `LOVELY_MOD_DIR` (no junctions/symlinks anywhere, a hard project rule as
+of 2026-08-28 — see "Multi-instance launch" below), the MPAPI dev-auth override in
+`core.lua`, the local MP server. Read those first if starting completely cold. This doc
+is the layer on top: how to actually **drive** BalatroTFT once instances are up, and
+BalatroTFT-specific gotchas that aren't true of vanilla Balatro or other BMP-family mods.
 
 ## What's actually available in this environment
 
@@ -236,22 +237,48 @@ blanket override — worth installing if this keeps coming up; see "Integration"
 
 ## Multi-instance launch (this machine only)
 
-`cctl launch N` itself is **unreliable on this machine** (the WSL→`explorer.exe`
-indirection it uses repeatedly failed to spawn a process at all, root cause never fully
-diagnosed) — don't rely on it for the actual process spawn. Its own `ping`/`eval`/
-`press`/`ui`/`--target` machinery against already-running instances works fine once
-they're up. Launch instances directly from Windows-side PowerShell instead, wrapped in a
-retry loop (the shared `lovely/dump` directory lock is intermittently held across
-instances — full root cause and the proven fix in Claude's own memory,
-`balatro-multi-instance-launch.md`):
+**No junctions/symlinks anywhere, as a hard project rule (2026-08-28)** — a junction
+into the real `%AppData%\Roaming\Balatro\Mods` has silently wiped the real source
+checkout before, and Balatro Mod Manager (a third-party tool installed on this
+machine) actively cycles that same real folder's `Mods`/`ModsOld`/`ModsNew` and has
+clobbered this project's setup there in the past too. Mods are deployed as real
+copies into a **dedicated per-instance folder tree** instead
+(`W:\Stuff\Programming\Balatro\BMPGithub\dev-mods\inst<N>\`), pointed at via
+lovely-injector's own `LOVELY_MOD_DIR` environment variable — confirmed real,
+supported by the installed lovely 0.9.0 (added upstream in v0.8.0), and read via
+`env::var_os("LOVELY_MOD_DIR")` directly (NOT run through the same
+`dirs::data_dir()`/known-folder resolution that made a plain `%APPDATA%` override
+silently fail for the dump directory in the past). Setting it also relocates
+`lovely/dump`, `lovely/log`, and `lovely/game-dump` for free, since those are all
+derived from `{LOVELY_MOD_DIR}/lovely/...` — each instance now gets its own private
+dump directory, which **permanently closes the old shared-dump-directory
+lock-contention problem** (confirmed live: 2 instances launched genuinely
+simultaneously, zero retry loop, both up on the first attempt — the retry loop
+below is now just cheap defensive insurance, not a load-bearing workaround).
+
+**Before launching, redeploy the actively-edited mods** (BalatroTFT/ClaudeControl —
+the ones this session edits; Steamodded/MultiplayerAPI/DebugPlus/JokerDisplay are
+static and only need deploying once):
+
+```powershell
+W:\Stuff\Programming\Balatro\BMPGithub\deploy-dev-mods.ps1              # all 8 instance folders
+W:\Stuff\Programming\Balatro\BMPGithub\deploy-dev-mods.ps1 -Instances 1,2  # just the ones you need
+```
+
+This robocopy-mirrors the real checkouts into each `dev-mods\inst<N>\` — **run this
+after every code edit, before relaunching**, since there's no junction anymore to
+make edits appear automatically. Cheap and fast (a few hundred KB of Lua).
 
 ```powershell
 $bat = Join-Path $env:TEMP "cctl_manual_instN.bat"
-Set-Content -Path $bat -Value @('@echo off','set BMP_IMPERSONATE_NAME=PlayerNNN','start "" "Y:\Applications\Steam\steamapps\common\Balatro\Balatro.exe"') -Encoding ASCII
+Set-Content -Path $bat -Value @(
+    '@echo off',
+    'set BMP_IMPERSONATE_NAME=PlayerNNN',
+    'set LOVELY_MOD_DIR=W:\Stuff\Programming\Balatro\BMPGithub\dev-mods\instN',
+    'start "" "Y:\Applications\Steam\steamapps\common\Balatro\Balatro.exe"'
+) -Encoding ASCII
 $up = $false
 for ($i = 1; $i -le 8; $i++) {
-    Remove-Item "C:\Users\rob\AppData\Roaming\Balatro\Mods\lovely\dump" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "C:\Users\rob\AppData\Roaming\Balatro\Mods\lovely\game-dump" -Recurse -Force -ErrorAction SilentlyContinue
     Start-Process -FilePath $bat
     for ($t = 0; $t -lt 12; $t++) {
         Start-Sleep -Milliseconds 1500
@@ -263,19 +290,19 @@ for ($i = 1; $i -le 8; $i++) {
 }
 ```
 
-Instance 1 = port 34343 (host, still needs `BMP_IMPERSONATE_NAME` too against the local
-dev server — real Steam auth fails against it), instance 2 = 34344, instance N =
-`34343+(N-1)`. Drive each from the Bash tool via
-`wsl.exe -e bash -c "python3 <ClaudeControl_src path>/cctl.sh --port <N> <command>"`
-(the Bash tool itself is Git Bash, not real WSL, and has no `/mnt/c` — always go through a
-`wsl.exe -e` subshell to reach `cctl.sh`, or use ClaudeControl's own `--target` flag
-against one real `cctl` invocation once instances are up).
+Instance 1 = port 34343 / `dev-mods\inst1` (host, still needs `BMP_IMPERSONATE_NAME`
+too against the local dev server — real Steam auth fails against it), instance 2 =
+34344 / `inst2`, instance N = port `34343+(N-1)` / `instN`. Drive each from the Bash
+tool via `wsl.exe -e bash -c "python3 <ClaudeControl_src path>/cctl.sh --port <N>
+<command>"` (the Bash tool itself is Git Bash, not real WSL, and has no `/mnt/c` —
+always go through a `wsl.exe -e` subshell to reach `cctl.sh`, or use ClaudeControl's
+own `--target` flag against one real `cctl` invocation once instances are up).
 
-**Always close every instance at the end of a session or before a code-change relaunch**
-(`Get-Process Balatro | Stop-Process -Force` via PowerShell with
-`dangerouslyDisableSandbox: true`) — junctioned source files can be locked open by a live
-instance, silently breaking the next edit from taking effect, and stale instances break
-the standard port-number assumptions for the next launch.
+**Always close every instance at the end of a session or before a code-change
+relaunch** (`Get-Process Balatro | Stop-Process -Force` via PowerShell with
+`dangerouslyDisableSandbox: true`) — a live instance can hold its own `dev-mods`
+copy open, and stale instances break the standard port-number assumptions for the
+next launch.
 
 ## When you actually need a screenshot
 

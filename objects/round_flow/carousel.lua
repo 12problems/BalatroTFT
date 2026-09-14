@@ -106,7 +106,7 @@ local function pick_carousel_slot(i)
 
 	state.pending_carousel_offer = nil
 	TFT.close_picker_overlay()
-	TFT.carousel_advance()
+	TFT.carousel_finish_after_delay()
 end
 
 for i = 1, TFT.CAROUSEL_OPTION_COUNT do
@@ -131,5 +131,61 @@ function TFT.carousel_advance()
 		state.round_index = state.round_index + 1
 		TFT.announce_checkpoint_if_due()
 		reset_blinds() -- re-apply ante/chip/boss-skip for the round we just moved to
+		-- Stage roadmap refresh (objects/round_flow/system_cards.lua): the
+		-- HUD-embedded predecessor of this display never refreshed on a
+		-- Carousel round advance at all (poll.lua's round_flow_advance was
+		-- the only call site) -- a real pre-existing gap, closed here for
+		-- free while moving this display to its new home.
+		pcall(TFT.refresh_stage_roadmap_display)
 	end
+end
+
+-- Carousel Blind (explicit user request, 2026-09-01): Carousel rounds never
+-- involve a real PvP/PvE blind at all (true since this file's original
+-- version -- the picker opens right at BLIND_SELECT before a blind is ever
+-- chosen). What WAS missing: after the last pick resolves, the player used
+-- to be dropped straight back onto blind-select for the NEXT round with no
+-- shop stop in between at all. Now, once every pick for this Carousel event
+-- is done (the solo path's own single free pick, or multiplayer's real
+-- draft finishing for every player), wait a flat, fixed delay -- ADDITIVE on
+-- top of the multiplayer draft's own existing CAROUSEL_PRE_TIMER_SECONDS/
+-- CAROUSEL_TURN_TIMER_SECONDS (objects/actions/carousel_draft.lua), not a
+-- replacement for them, per explicit user clarification -- then transition
+-- everyone into the shop. Applies identically to solo and multiplayer.
+TFT.CAROUSEL_POST_PICK_DELAY_SECONDS = 5
+
+-- Runs the real round-advance bookkeeping (TFT.carousel_advance, above) and
+-- then transitions into the shop screen. Carousel has no real Blind/
+-- ROUND_EVAL screen for vanilla's own G.FUNCS.cash_out to hand off from --
+-- confirmed by reading the real installed button_callbacks.lua: cash_out's
+-- entire SHOP state-transition is nested inside `if G.round_eval then ...
+-- end`, and G.round_eval only ever exists after a real scored Blind's
+-- ROUND_EVAL animation, which Carousel never produces. So this replicates
+-- just the actual state-transition lines cash_out itself performs (the
+-- round-bonus/discard/hand-count reset and the G.STATE/G.STATE_COMPLETE/
+-- shop_free/shop_d6ed flips), skipping the animation-only lines (deck
+-- shuffle, round_eval:remove()) that don't apply here since there's no
+-- round_eval screen to tear down in the first place.
+function TFT.carousel_finish()
+	TFT.carousel_advance()
+	G.GAME.current_round.jokers_purchased = 0
+	G.GAME.current_round.discards_left = math.max(0, G.GAME.round_resets.discards + G.GAME.round_bonus.discards)
+	G.GAME.current_round.hands_left = math.max(1, G.GAME.round_resets.hands + G.GAME.round_bonus.next_hands)
+	G.STATE = G.STATES.SHOP
+	G.GAME.shop_free = nil
+	G.GAME.shop_d6ed = nil
+	G.STATE_COMPLETE = false
+end
+
+function TFT.carousel_finish_after_delay()
+	G.E_MANAGER:add_event(Event({
+		trigger = 'after',
+		delay = TFT.CAROUSEL_POST_PICK_DELAY_SECONDS,
+		blocking = false,
+		blockable = false,
+		func = function()
+			TFT.carousel_finish()
+			return true
+		end,
+	}))
 end

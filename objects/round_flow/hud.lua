@@ -2,11 +2,25 @@
 -- feedback (2026-08-26): the "Stage N: [pips]" roadmap row (blind_select.lua's
 -- TFT.build_stage_roadmap_row, previously prepended above the blind-select
 -- card) got visually crowded by the blind card next to it. Moved here into the
--- persistent HUD's own Ante box instead -- vanilla's Ante number is redundant
--- with our own stage-pinned Ante anyway (hooks.lua's TFT.apply_current_round_
--- blind_state already forces G.GAME.round_resets.ante to match our stage) --
--- and the roadmap now lives somewhere it's never covered by a card. The Round
--- box is replaced with a round-elapsed timer, matching the visual convention
+-- persistent HUD's own Ante box (vanilla's Ante number was redundant with our
+-- own stage-pinned Ante anyway) as of that date.
+--
+-- MOVED AGAIN, 2026-09-01 (explicit user request, item 5): the roadmap is now
+-- a floating UIBox anchored below the new system-card area instead
+-- (objects/round_flow/system_cards.lua's TFT.attach_stage_roadmap_display/
+-- refresh_stage_roadmap_display, built on that same file's own new CardArea)
+-- -- out of the HUD's way entirely, still always visible. The Ante box below
+-- is therefore no longer repurposed -- vanilla's own real Ante number shows
+-- through unmodified again, which is now an ACCURATE number worth seeing
+-- (hooks.lua's TFT.apply_current_round_blind_state already keeps
+-- G.GAME.round_resets.ante pinned to our current stage), not stale/misleading
+-- the way it would have been before that hook existed. TFT.build_hud_stage_
+-- nodes itself is NOT deleted -- system_cards.lua's own roadmap reuses it
+-- verbatim (same narrow-column pip layout, still correct at its new home)
+-- rather than duplicating the node-building logic a second time.
+--
+-- The Round box is still replaced with a round-elapsed timer, matching the
+-- visual convention
 -- BalatroMultiplayerSpeedrun's own ui/timer/ uses for its run clock (the
 -- `string.format('%d:%05.2f', minutes, rem)` -- m:ss.mm -- convention from
 -- that mod's format.lua, referenced for the TEXT FORMAT/style consistency the
@@ -31,13 +45,27 @@
 --     than 100 before their first PvP loss, so this is an accurate default,
 --     not a guess.
 
--- m:ss.mm, mirroring BalatroMultiplayerSpeedrun/ui/timer/format.lua's own
--- convention so this reads consistently with other multiplayer Balatro mods.
+-- REWORKED 2026-09-01 (explicit user request): the old m:ss.mm format
+-- (mirroring BalatroMultiplayerSpeedrun/ui/timer/format.lua) ran too long on
+-- screen, forcing the whole left-side HUD bar wider than it needed to be.
+-- Since this is fundamentally a COUNTDOWN (not a stopwatch counting up to an
+-- unbounded time), swapped to the real official BalatroMultiplayer mod's own
+-- convention instead (github.com/Balatro-Multiplayer/BalatroMultiplayer,
+-- ui/game/timer.lua's `timer_UI_count` DynaText: `MP.GAME.timer > 9.95` shows
+-- a bare integer, else one decimal place) -- confirmed by reading that repo's
+-- real source directly (`gh api .../contents/ui/game/timer.lua`), not
+-- guessed at. Caps the displayed text at 3 characters for any timer under
+-- 1000 seconds (every real budget here maxes out at 90s, domain/
+-- round_timers.lua -- those numbers are UNCHANGED by this, only the text
+-- rendering them is). Below ~10s it shows one decimal (e.g. "9.8", "0.3"),
+-- matching that a countdown's final seconds are the part worth seeing
+-- precisely; above that it's a plain whole-second integer.
 function TFT.format_round_timer(secs)
 	if not secs or secs < 0 then secs = 0 end
-	local minutes = math.floor(secs / 60)
-	local rem = secs - minutes * 60
-	return string.format('%d:%05.2f', minutes, rem)
+	if secs > 9.95 then
+		return string.format('%d', secs)
+	end
+	return string.format('%.1f', secs)
 end
 
 -- Plain fields on TFT itself (not G.GAME.tft_state) -- these are purely
@@ -46,7 +74,7 @@ end
 -- survive a save/load the way state.life_total etc. do. DynaText's
 -- {ref_table, ref_value} binding just needs a STABLE table reference to poll
 -- every frame -- TFT (SMODS.current_mod) is that, for the life of the process.
-TFT.round_timer_text = TFT.round_timer_text or '0:00.00'
+TFT.round_timer_text = TFT.round_timer_text or '0.0'
 TFT.hud_life_text = TFT.hud_life_text or ('Life ' .. TFT.STARTING_LIFE)
 TFT.hud_opponent_life_text = TFT.hud_opponent_life_text or ''
 -- Early Warning augment display (closes next-session-plan-3.md priority
@@ -380,11 +408,11 @@ function create_UIBox_HUD()
 	local tree = _tft_orig_create_UIBox_HUD()
 
 	local ok, err = pcall(function()
-		local ante_col = TFT.find_hud_def_node(tree, 'hud_ante')
-		if ante_col then
-			ante_col.nodes = TFT.build_hud_stage_nodes() or ante_col.nodes
-		end
-
+		-- Ante box left untouched as of 2026-09-01 -- the roadmap that used to
+		-- live here moved to a floating display below the new system-card
+		-- area instead (see this file's own header comment). `hud_ante` is
+		-- still located below purely to find its SIBLING column (round_col),
+		-- not to overwrite its own nodes anymore.
 		local timer_row, timer_col = TFT.find_hud_def_node(tree, 'row_round_text')
 		if timer_row then
 			timer_row.config.id = nil -- no longer vanilla's round box; avoid a stale get_UIE_by_ID('row_round_text') match later
@@ -417,31 +445,9 @@ function create_UIBox_HUD()
 	return tree
 end
 
--- The stage roadmap's pip colours (cleared/current/upcoming) depend on
--- state.round_index, but G.HUD is a real, persistent UIBox built ONCE per run
--- (game.lua's Game:start_run) -- other code (G.hand_text_area) caches direct
--- references INTO that same box's other elements (hand_chips/hand_mult/etc,
--- read every frame by vanilla's own score-popup juice code), so rebuilding
--- the WHOLE box on every round transition would silently invalidate those
--- cached refs. Instead this only ever touches the one node this mod owns,
--- using the same add_child/remove-then-rebuild primitive JokerDisplay's own
--- JokerDisplayBox:remove_children/add_child (Mods/JokerDisplay/src/ui.lua)
--- already uses to live-update a card's display after it's built -- itself
--- just vanilla's real UIBox:add_child (engine/ui.lua), which calls
--- set_parent_child (the same recursive node-def-to-UIElement builder
--- UIBox:init uses at construction time) then a full self:recalculate().
-function TFT.refresh_hud_stage_display()
-	if not TFT.is_run_active() or not G.HUD then return end
-	local node = G.HUD:get_UIE_by_ID('hud_ante')
-	if not node then return end
-	local ok, defs = pcall(TFT.build_hud_stage_nodes)
-	if not ok or not defs then return end
-
-	if node.children and #node.children > 0 then
-		remove_all(node.children)
-		node.children = {}
-	end
-	for _, def in ipairs(defs) do
-		G.HUD:add_child(def, node)
-	end
-end
+-- SUPERSEDED 2026-09-01: the HUD-embedded live-refresh (rebuilding the
+-- 'hud_ante' node's children in place) is replaced by system_cards.lua's own
+-- TFT.refresh_stage_roadmap_display, which rebuilds the new floating box's
+-- own column node the identical way (same add_child/remove-then-rebuild
+-- primitive, documented there). TFT.build_hud_stage_nodes (above) is still
+-- very much alive -- reused as-is by that new function.

@@ -652,10 +652,32 @@ function TFT.get_augment(key)
 	return nil
 end
 
+-- TEMPORARY, for the small-scale isolated-augment gameplay test (2026-09-14,
+-- see docs/design/next-session-plan-6.md's closing section) -- when this is a
+-- non-nil set, TFT.augments_by_tier only offers/rerolls keys listed here, so
+-- a real checkpoint pick during the test can only land on one of a small,
+-- easily-verified pool instead of any of the full 73. Set back to `nil` (or
+-- delete this block) once that test is done -- it's the one flag to flip to
+-- restore the full pool, nothing else in this file changes.
+TFT.AUGMENT_TEST_MODE_WHITELIST = {
+	nest_egg = true,
+	warm_up = true,
+	steady_hands = true,
+	growth_spurt = true,
+	portfolio_diversification = true,
+	extra_pocket = true,
+	second_look = true,
+	unstoppable = true,
+	everythings_for_sale = true,
+	kings_court = true,
+}
+
 function TFT.augments_by_tier(tier)
 	local list = {}
 	for _, aug in ipairs(TFT.AugmentDefinitions) do
-		if aug.tier == tier then table.insert(list, aug) end
+		if aug.tier == tier and (not TFT.AUGMENT_TEST_MODE_WHITELIST or TFT.AUGMENT_TEST_MODE_WHITELIST[aug.key]) then
+			table.insert(list, aug)
+		end
 	end
 	return list
 end

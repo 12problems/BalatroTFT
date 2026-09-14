@@ -47,11 +47,11 @@ confirmed all 3 clients computed the identical ghost + snapshot-source assignmen
 then had the ghost broadcast a losing score against the snapshot — real damage was
 applied (100 → 93.5 life), and the other two clients were confirmed unaffected.
 
-## 3. Double Pack — STILL DISABLED, substantial new diagnosis, not fully fixed
+## 3. Double Pack — FIXED and re-enabled (closed 2026-09-01)
 
 [objects/augments/shop_effects.lua](../../objects/augments/shop_effects.lua)'s
-`Card:open` hook — full blow-by-blow is in that file's own comments. Four MORE real
-bugs were found and fixed live this pass (on top of the original two):
+`Card:open` hook — full blow-by-blow is in that file's own comments. Six real bugs
+were found and fixed live across two passes:
 - **Bug #3**: `SMODS.Booster.update_pack` (the real per-frame pack-UI builder) is
   gated on `G.STATE_COMPLETE`, which something races back to `true` before it can
   re-fire for the second pack. Fixed by re-asserting `G.STATE_COMPLETE = false`
@@ -65,19 +65,24 @@ bugs were found and fixed live this pass (on top of the original two):
 - **Bug #5** (flagged by the user watching the test live): the first pack's own
   physical card object was left behind as a real, visible, mid-dissolve leftover.
   Fixed by force-removing it explicitly before opening the second pack.
-- **Bug #6, NOT FIXED** (also flagged by the user watching the test live): with #1-#5
-  fixed, the two packs' contents ended up MERGED into one 6-card choice instead of two
-  separate 3-card ones. Root cause (deduced, not yet re-confirmed with fresh
-  instrumentation): the first pack's own delayed card-creation chain — scheduled back
-  when it was first opened, entirely independent of anything this file does — isn't
-  cancelled by bug #5's force-remove (removing the card object doesn't cancel its
-  already-queued events), and if it fires AFTER bug #3's fix has already rebuilt
-  `G.pack_cards` for the second pack, both packs' cards land in the same CardArea.
-  **Next step**: either find a real way to cancel pack 1's own pending events, or
-  delay opening pack 2 until comfortably past pack 1's own full
-  open-to-populate window (~0.4s + 1.3·√GAMESPEED s) — not just until
-  `G.booster_pack` goes nil, since a fast skip can close the UI before that chain
-  fires. `should_double` stays hardcoded `false` until this is actually fixed.
+- **Bug #6, FIXED 2026-09-01** (also flagged by the user watching the test live):
+  with #1-#5 fixed, the two packs' contents ended up MERGED into one 6-card choice
+  instead of two separate 3-card ones. Root cause: the first pack's own delayed
+  card-creation chain — scheduled back when it was first opened, entirely
+  independent of anything this file does — isn't cancelled by bug #5's force-remove
+  (removing the card object doesn't cancel its already-queued events), and if it
+  fires AFTER bug #3's fix has already rebuilt `G.pack_cards` for the second pack,
+  both packs' cards land in the same CardArea. Fixed by requiring real elapsed time
+  since the FIRST pack's own open() call (not just since it visually closed via
+  `G.booster_pack` going nil) to be comfortably past that pack's own full
+  open-to-populate window (`0.4 + 1.3·√GAMESPEED + TFT.DOUBLE_PACK_SAFE_MARGIN_SECONDS`)
+  before ever triggering the second pack's open — guarantees pack 1's own delayed
+  chain has already landed its cards in pack 1's own (still-valid) CardArea first.
+  Verified live with the worst-case timing (skipping pack 1 as fast as possible,
+  the exact scenario that used to trigger the merge): pack 2 correctly showed
+  exactly 3 cards, no hang, no `G.STATE` corruption, picking from it correctly
+  returned to the shop, and a screenshot confirmed no leftover visual artifacts.
+  `should_double` is back to its real condition — the augment is live again.
 
 ## 4. Carousel draft live countdown — FIXED
 
@@ -147,7 +152,7 @@ clean, unhurried re-verification pass before considering it fully closed.
 
 ## What's left
 
-1. Double Pack bug #6 (see above) — real next step already scoped.
+1. ~~Double Pack bug #6~~ — FIXED 2026-09-01, see above.
 2. Shop/checkpoint timer: code-reviewed, not independently re-verified live after the
    test session's own screen-corruption interruption (see above).
 3. The hurry-up window and full host-broadcast round-sync barrier remain
@@ -155,3 +160,16 @@ clean, unhurried re-verification pass before considering it fully closed.
    notes above. A real host-authoritative round-advance system would be a good
    candidate for a dedicated future session in its own right, not a quick add-on.
 4. As always: nothing in this session is committed to git.
+
+## Addendum, 2026-08-30: mod deployment no longer uses junctions
+
+Unrelated to the fixes above, but a real standing project rule as of this date: mods
+are no longer junctioned into the real `%AppData%\Roaming\Balatro\Mods` (a junction
+there has silently wiped the real source checkout before, and a third-party mod
+manager on this machine actively cycles that same folder). Deployment now uses real
+per-instance copies under `dev-mods\inst<N>\`, launched via lovely-injector's own
+`LOVELY_MOD_DIR` env var. See `CLAUDE.md` and `claudecontrol-guide.md`'s own
+"Multi-instance launch" section for the full recipe, and
+`W:\Stuff\Programming\Balatro\BMPGithub\deploy-dev-mods.ps1` — **run this after every
+code edit, before relaunching**, since there's no junction anymore to make edits take
+effect automatically.

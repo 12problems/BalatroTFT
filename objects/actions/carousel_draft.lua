@@ -224,7 +224,12 @@ MPAPI.ActionType({
 		if not state then return end
 		state.carousel_draft = nil
 		TFT.close_picker_overlay()
-		TFT.carousel_advance()
+		-- Carousel Blind (objects/round_flow/carousel.lua): the 5s post-pick
+		-- delay before the shop is ADDITIVE on top of this draft's own
+		-- CAROUSEL_PRE_TIMER_SECONDS/CAROUSEL_TURN_TIMER_SECONDS above --
+		-- this finish action already only fires once every player's turn is
+		-- done (turn_index > #turn_order), so the delay starts right here.
+		TFT.carousel_finish_after_delay()
 	end,
 })
 

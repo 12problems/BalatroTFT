@@ -26,8 +26,20 @@ Get-Process Balatro -ErrorAction SilentlyContinue | Stop-Process -Force
 
 Not needed between individual test steps within the same turn — only right before control
 actually returns to the user. Leaving instances running afterward wastes resources, can
-lock junctioned source files (silently breaking the next session's edits from taking
-effect), and leaves stale lobby/connection state around.
+lock a live instance's own `dev-mods` copy open, and leaves stale lobby/connection state
+around.
+
+## No junctions or symlinks, ever (hard rule, 2026-08-28)
+
+Mods are deployed as real copies via `deploy-dev-mods.ps1` into
+`dev-mods\inst<N>\`, launched with `LOVELY_MOD_DIR` pointing at that per-instance
+folder — never junctioned into the real `%AppData%\Roaming\Balatro\Mods`. A junction
+there has silently wiped the real source checkout before, and a third-party mod
+manager on this machine actively cycles that same folder and has clobbered this
+setup in the past too. See [docs/design/claudecontrol-guide.md](docs/design/claudecontrol-guide.md)'s
+"Multi-instance launch" section for the full recipe. **Run `deploy-dev-mods.ps1`
+after every code edit, before relaunching** — there's no junction anymore to make
+edits appear automatically.
 
 ## Design docs
 

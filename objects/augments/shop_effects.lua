@@ -242,34 +242,32 @@ end
 -- explicitly and defensively once we're ready to open the second one,
 -- regardless of whatever its own animation was doing.
 --
--- BUG #6, FOUND, NOT YET FIXED (this pass, also flagged by the user watching
--- this exact test): with bugs #1-#5 all fixed, the two packs' contents ended
--- up MERGED into a single 6-card choice (3 real cards from each pack) instead
--- of two separate sequential 3-card choices -- confirmed by direct user
--- observation of the actual running instance during this same test. Root
--- cause (deduced from the evidence, not yet independently re-confirmed via
--- fresh instrumentation): the FIRST pack's own card-creation chain
--- (Card:open()'s delayed self:explode() -> ~1.7s-later SMODS.create_card
--- loop, scheduled back when pack 1 was first opened, entirely independent of
--- anything this file does) is never cancelled by bug #5's force-remove --
--- removing the CARD OBJECT doesn't cancel its own already-queued
--- G.E_MANAGER events. Those events reference `G.pack_cards` via the GLOBAL
--- at the time they actually FIRE, not a snapshot taken at schedule time -- so
--- if pack 1's own ~1.7s-delayed card-creation chain fires AFTER bug #3's fix
--- has already rebuilt `G.pack_cards` for pack 2 (a real, plausible timing
--- overlap depending on exactly when the player skips pack 1), pack 1's own 3
--- cards land into pack 2's fresh CardArea right alongside pack 2's own 3,
--- for 6 total, and pack 1's own now-confused closing logic likely explains
--- the G.STATE corruption (G.STATE reading nil) also observed in that same
--- test. NEXT STEP for whoever picks this back up: find a real way to either
--- (a) cancel pack 1's own pending G.E_MANAGER events outright when
--- force-removing its card (would need to identify exactly which queued
--- events belong to it -- not obviously exposed), or (b) delay opening the
--- second pack until comfortably PAST pack 1's own full open-to-populate
--- window (~0.4s + 1.3*sqrt(G.SETTINGS.GAMESPEED)s, i.e. don't just wait for
--- G.booster_pack to go nil -- also track real elapsed time since pack 1's
--- OWN open() call, not just since it visually closed, since a fast skip can
--- close the UI well before that chain has fired).
+-- BUG #6, FOUND AND FIXED (2026-09-01): with bugs #1-#5 all fixed, the two
+-- packs' contents ended up MERGED into a single 6-card choice (3 real cards
+-- from each pack) instead of two separate sequential 3-card choices --
+-- confirmed by direct user observation of the actual running instance during
+-- a live test. Root cause: the FIRST pack's own card-creation chain
+-- (Card:open()'s delayed self:explode() -> ~0.4s+1.3*sqrt(GAMESPEED)s-later
+-- SMODS.create_card loop, scheduled back when pack 1 was first opened,
+-- entirely independent of anything this file does) is never cancelled by bug
+-- #5's force-remove -- removing the CARD OBJECT doesn't cancel its own
+-- already-queued G.E_MANAGER events. Those events reference `G.pack_cards`
+-- via the GLOBAL at the time they actually FIRE, not a snapshot taken at
+-- schedule time -- so if pack 1's own delayed card-creation chain fires
+-- AFTER bug #3's fix has already rebuilt `G.pack_cards` for pack 2 (a real,
+-- plausible timing overlap when the player skips pack 1 fast), pack 1's own
+-- 3 cards land into pack 2's fresh CardArea right alongside pack 2's own 3,
+-- for 6 total. Fix: don't just wait for `G.booster_pack` to go nil (that can
+-- happen well before pack 1's own delayed chain has actually fired, on a
+-- fast skip) -- ALSO require real elapsed time since pack 1's OWN open()
+-- call (not since it visually closed) to be comfortably past its full
+-- open-to-populate window before triggering pack 2, so pack 1's own chain is
+-- guaranteed to have already fired (and landed its cards in pack 1's OWN
+-- CardArea, still valid and unclobbered at that point) before pack 2's
+-- rebuild ever happens. `TFT.DOUBLE_PACK_SAFE_MARGIN_SECONDS` is real slack
+-- on top of the theoretical 0.4+1.3*sqrt(GAMESPEED)s minimum, since that
+-- number was read out of vanilla's source, not independently re-measured.
+TFT.DOUBLE_PACK_SAFE_MARGIN_SECONDS = 1.0
 local function tft_check_pending_double_pack()
 	local pending = TFT._pending_double_pack
 	if not pending then return end
@@ -279,6 +277,13 @@ local function tft_check_pending_double_pack()
 	end
 	pending.closed_at = pending.closed_at or G.TIMERS.REAL
 	if G.TIMERS.REAL - pending.closed_at < 0.6 then return end
+
+	-- BUG #6's fix -- see the header comment above. Gated on time since pack
+	-- 1's own OPEN call, not since it closed -- a fast skip can close the UI
+	-- well before pack 1's own delayed card-creation chain has fired.
+	local pack1_populate_window = 0.4 + 1.3 * math.sqrt(G.SETTINGS.GAMESPEED or 1) + TFT.DOUBLE_PACK_SAFE_MARGIN_SECONDS
+	if G.TIMERS.REAL - pending.started_at < pack1_populate_window then return end
+
 	TFT._pending_double_pack = nil
 
 	-- BUG #5's fix -- see the header comment above.
@@ -308,9 +313,7 @@ end
 
 local _tft_orig_card_open_double_pack = Card.open
 function Card:open(...)
-	-- Disabled pending BUG #6 above -- `should_double` is permanently false
-	-- until this returns true again once the real fix lands.
-	local should_double = false and TFT.is_run_active() and TFT.has_augment('double_pack')
+	local should_double = TFT.is_run_active() and TFT.has_augment('double_pack')
 		and self.ability and self.ability.set == 'Booster' and not self._tft_double_pack_clone
 	local center_key = should_double and self.config and self.config.center and self.config.center.key
 	local ret = _tft_orig_card_open_double_pack(self, ...)

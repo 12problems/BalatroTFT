@@ -14,11 +14,34 @@
 -- so vanilla's own boss-eligibility formula (get_new_boss, common_events.lua)
 -- naturally gates the 5 finisher bosses to our real Stage 7, with zero
 -- reimplementation of that eligibility logic.
+-- BUG FOUND & FIXED, 2026-09-01 (live-diagnosed via a Portfolio Diversification
+-- retest that turned out to be running on stale state): vanilla's own
+-- Game:start_run(args) already correctly restores G.GAME.tft_state -- our own
+-- state, just a plain nested field inside G.GAME -- as part of the ordinary
+-- save/continue mechanism whenever `args.savetext` is present (confirmed by
+-- reading the real installed game.lua: `self.GAME = saveTable and
+-- saveTable.GAME or self:init_game_object()`, where saveTable is exactly
+-- `args.savetext`). This hook used to unconditionally reset
+-- round_index/level/xp/etc back to fresh-run defaults regardless of whether
+-- the run being started was a genuine new run or a continue -- silently
+-- discarding a real continue's already-correctly-restored progress every
+-- time, while G.GAME's own vanilla fields (dollars, jokers, ante) stayed
+-- correctly resumed. Confirmed live: continuing a save showed real carried-
+-- over jokers/dollars/ante alongside TFT's own state reading round 1/level 1,
+-- and G.GAME.chips left at a stale leftover value from the old run since
+-- nothing had reset it either. Fixed by only running the fresh-run reset
+-- block below when this is genuinely NOT a continue.
 local _tft_orig_start_run = Game.start_run
 function Game:start_run(args)
+	local is_continue = (args and args.savetext) ~= nil
 	_tft_orig_start_run(self, args)
 	local state = TFT.get_state()
-	if state then
+	-- Only reset to fresh-run defaults for a genuine new run -- a continue
+	-- already has all of this correctly restored (see this function's own
+	-- header comment). Everything AFTER this block (win_ante, traits engine
+	-- re-injection flag, round timer, reset_blinds()) still needs to run
+	-- either way, so it stays unconditional below.
+	if state and not is_continue then
 		state.initialized = true
 		state.round_index = 1
 		state.round_advanced_for_index = 0

@@ -47,6 +47,120 @@ function TFT.get_active_trait_tiers()
 	return tiers
 end
 
+-- Live trait-status description (explicit user request, 2026-09-01): human-
+-- readable labels for the internal trait_tags keys (objects/traits/
+-- definitions.lua/tagging.lua), since none existed anywhere in the codebase
+-- before this -- every other reference to a trait uses its bare internal key.
+TFT.TraitDisplayNames = {
+	Financiers = 'Financiers',
+	Scholars = 'Scholars',
+	SpadesGuild = 'Spades Guild',
+	ClubsGuild = 'Clubs Guild',
+	DiamondsGuild = 'Diamonds Guild',
+	HeartsGuild = 'Hearts Guild',
+	Multipliers = 'Multipliers',
+	Scalers = 'Scalers',
+	Encore = 'Encore',
+	Ascendants = 'Ascendants',
+}
+
+-- Builds the sorted list of trait-status entries the Traits Engine's own
+-- tooltip (this file's generate_ui, below) reads every time it's shown.
+-- Explicit user request: only traits with >=1 owned tagged Joker (a RAW
+-- count -- deliberately NOT including Trait Heart's own +2 bonus, since
+-- "has at least 1 of" naturally means "owns at least one tagged Joker", not
+-- "the bonus alone would qualify it"); sorted with every trait whose
+-- breakpoint is currently MET ("active", tier > 0) above every trait that
+-- isn't yet (tier == 0, "including those that do not have any [met]
+-- breakpoints") -- regardless of raw owned count, per the user's own
+-- explicit example (a tier-1-met trait outranks a not-yet-met trait even if
+-- the latter happens to have a higher raw count) -- then by tier descending
+-- within the active group, then by raw count descending as a tie-break
+-- (unspecified by the user, but the most sensible secondary ordering: within
+-- an equal tier, "closer to the next tier" first), then alphabetically for
+-- full determinism.
+function TFT.build_trait_status_entries()
+	local counts = TFT.count_trait_tags()
+	local entries = {}
+	for trait_key, trait_def in pairs(TFT.Traits) do
+		local count = counts[trait_key] or 0
+		if count >= 1 then
+			table.insert(entries, {
+				key = trait_key,
+				count = count,
+				tier = TFT.trait_tier_reached(trait_key, count),
+				max_tier = #trait_def.breakpoints,
+			})
+		end
+	end
+	table.sort(entries, function(a, b)
+		local a_active, b_active = a.tier > 0, b.tier > 0
+		if a_active ~= b_active then return a_active end
+		if a.tier ~= b.tier then return a.tier > b.tier end
+		if a.count ~= b.count then return a.count > b.count end
+		return a.key < b.key
+	end)
+	return entries
+end
+
+-- One line of plain display text for an entry's own HEADER row -- e.g.
+-- "Spades Guild (2 owned)". This is now the WHOLE of what this card's own
+-- tooltip shows per trait (see generate_ui's own 2026-09-05 comment) -- the
+-- breakpoint ladder itself (TFT-style: every threshold listed, the
+-- currently-met one visually emphasized) moved to each trait's own Sticker
+-- badge tooltip (objects/traits/stickers.lua's build_sticker_loc_txt), kept
+-- as plain text here since generate_ui (below) sets each line's colour
+-- directly on its own node instead of through {C:colour} markup.
+function TFT.trait_status_line_text(entry)
+	local name = TFT.TraitDisplayNames[entry.key] or entry.key
+	return name .. ' (' .. entry.count .. ' owned)'
+end
+
+-- Per-breakpoint effect text, one entry per trait's own `breakpoints` index
+-- (objects/traits/definitions.lua) -- sourced from docs/design/traits.md's
+-- own roster table, but NOT copied blindly: cross-checked against what this
+-- file's own calculate()/trait_round_reset() actually implements, and
+-- trimmed wherever the doc's text promises something not actually wired up
+-- (flagged inline below, not silently dropped) -- this tooltip is meant to
+-- tell a player the truth about what their Jokers are doing, not restate
+-- design intent that never got built.
+--
+-- KNOWN GAPS, explicitly not glossed over:
+--  - Scholars tiers 2/3 (Tarot/Planet/Spectral -25% price; 25% chance a used
+--    consumable isn't consumed) were never actually implemented -- only
+--    tier 1's +1 consumable slot is real (this file's own trait_round_reset,
+--    the only Scholars-specific code anywhere in the codebase besides the
+--    display-name entry). Marked "(not yet implemented)" rather than shown
+--    as if real.
+--  - Ascendants' doc text for tiers 2/3 ("Legendary Jokers can now appear in
+--    the shop" / "Legendary shop odds raised to match Rare") is NOT
+--    implemented as an Ascendants-specific effect -- Legendary's real shop
+--    appearance is governed entirely separately, by level (objects/
+--    round_flow/shop_odds.lua's own get_current_pool hook), confirmed via
+--    that file's own comments. Dropped from the displayed text entirely
+--    (not marked as a gap inline, just omitted) since it was never a real
+--    Ascendants mechanic to begin with, not a cut corner.
+TFT.TraitBreakpointEffects = {
+	Financiers = { 'Interest cap $30', 'Interest cap $50', 'Interest cap $100' },
+	Scholars = { '+1 consumable slot', '-25% Tarot/Planet/Spectral price (not yet implemented)', '25% chance a used consumable isn\'t consumed (not yet implemented)' },
+	SpadesGuild = { '+20 chips when a Spade scores', '+40 chips and +2 Mult when a Spade scores' },
+	ClubsGuild = { '+4 Mult when a Club scores', '+8 Mult when a Club scores, x1.5 Mult once/hand if 3+ Clubs scored' },
+	DiamondsGuild = { '+$2 when a Diamond scores', '+$3 when a Diamond scores, 25% chance not consumed on discard' },
+	HeartsGuild = { 'Heal 2 life at round end', '+50% chance to heal 1 life per Heart scored (max 10/round)' },
+	Multipliers = { 'xMult effects +20% stronger', '+40% stronger', '+60% stronger' },
+	Scalers = { 'Scaling Jokers grow 2x as fast', '4x as fast', '6x as fast, Scalers take half a Joker slot each', '8x as fast', '10x as fast' },
+	Encore = { 'First & last played card each retrigger once', 'Last card also gains x2 Mult', 'Every played card retriggers once and gains x2 Mult' },
+	Ascendants = { '+5% Rare shop odds, +1 Joker slot', '+1 more Joker slot (2 total), +10% Rare odds (15% total), +5% Negative odds', 'Retrigger played/held card effects twice, +5% Negative odds (10% total)', 'x10 Mult on all scored cards' },
+}
+
+-- NOTE: this file used to also define TFT.trait_breakpoint_rows here (one
+-- row per breakpoint threshold, current-tier row flagged) for the Traits
+-- Engine's own tooltip to render a full ladder per trait. Removed 2026-09-05
+-- when that ladder moved to each trait's own Sticker badge tooltip instead
+-- (objects/traits/stickers.lua's build_sticker_loc_txt builds the equivalent
+-- ladder directly off TFT.Traits[key].breakpoints/TFT.TraitBreakpointEffects,
+-- so nothing else needed this helper).
+
 local SUIT_TAG = {
 	Spades = 'SpadesGuild',
 	Clubs = 'ClubsGuild',
@@ -78,15 +192,79 @@ SMODS.Joker {
 	key = 'traits_engine',
 	loc_txt = {
 		name = 'Traits Engine',
+		-- Superseded by generate_ui below whenever the card's tooltip is
+		-- actually built (that extension point takes priority over this
+		-- static text entirely, confirmed via the real installed Steamodded
+		-- patch to functions/common_events.lua's generate_card_ui) -- kept
+		-- as a fallback for any code path that reads loc_txt.text directly
+		-- without going through the normal tooltip pipeline.
 		text = { '{C:inactive}(Internal -- applies TFT Trait breakpoint bonuses. Should never be visible in a real shop/collection.)' },
 	},
+	-- Live trait-status description (explicit user request, 2026-09-01):
+	-- SMODS's own `generate_ui(self, info_queue, card, desc_nodes,
+	-- specific_vars, full_UI_table)` extension point -- confirmed via the
+	-- real installed Steamodded lovely patch (lovely/center.toml, patching
+	-- functions/common_events.lua's generate_card_ui) that this branch is
+	-- checked FIRST, ahead of every vanilla-named-Joker case AND the normal
+	-- static-loc_txt fallback, and that `desc_nodes` wants one array-of-
+	-- nodes entry per rendered line -- confirmed by reading that exact shape
+	-- straight out of localize()'s own real per-line node-building loop
+	-- (functions/misc_functions.lua) rather than guessing at it, so this
+	-- reuses the identical per-line node shape vanilla's own tooltip
+	-- rendering already produces (one G.UIT.T per line, same desc_scale
+	-- formula, same shadow flag) -- these lines just skip the {C:colour}
+	-- markup-parsing step entirely and set colour directly per node instead,
+	-- since the colour needs to vary per COMPUTED line (active vs inactive),
+	-- not per fixed static template.
+	-- SIMPLIFIED 2026-09-05 (explicit user request/feedback): the previous
+	-- "full TFT-style breakpoint ladder for every owned trait" version made
+	-- this card's own tooltip one huge, hard-to-read wall of shadowed text
+	-- (a real usability regression, not a false alarm -- one screenshot of
+	-- it with 5+ owned traits was basically unreadable). The full breakpoint-
+	-- ladder description (every threshold + its own effect text, current one
+	-- emphasized) already lives on each trait's own Sticker badge tooltip
+	-- (objects/traits/stickers.lua's build_sticker_loc_txt) -- that's the
+	-- "HUD element" that now owns the descriptive text. This card's own
+	-- tooltip goes back to being a plain, compact roster: one line per
+	-- qualifying trait, name + the NUMERIC owned count only, still sorted
+	-- active-tier-first via TFT.build_trait_status_entries (unchanged) --
+	-- effectively an index pointing at which trait stickers to go hover for
+	-- the actual numbers, not a second copy of the same wall of text.
+	generate_ui = function(self, info_queue, card, desc_nodes, specific_vars, full_UI_table)
+		local desc_scale = 0.32 * ((G.LANG and G.LANG.font and G.LANG.font.DESCSCALE) or 1)
+		local entries = TFT.build_trait_status_entries()
+		if #entries == 0 then
+			desc_nodes[#desc_nodes + 1] = { { n = G.UIT.T, config = {
+				text = '(No trait-tagged Jokers owned yet)', colour = G.C.UI.TEXT_INACTIVE, scale = desc_scale, shadow = true,
+			} } }
+			return
+		end
+		for _, entry in ipairs(entries) do
+			desc_nodes[#desc_nodes + 1] = { { n = G.UIT.T, config = {
+				text = TFT.trait_status_line_text(entry),
+				colour = entry.tier > 0 and G.C.GREEN or G.C.UI.TEXT_INACTIVE,
+				scale = desc_scale,
+				shadow = true,
+			} } }
+		end
+	end,
 	config = { extra = {} },
 	rarity = 1,
 	cost = 0,
 	unlocked = true,
 	discovered = true,
 	blueprint_compat = false,
-	eternal_compat = false,
+	-- Eternal + Negative (explicit user request, 2026-09-01 -- see
+	-- objects/round_flow/system_cards.lua for the full immunity plan, of
+	-- which this is only the defense-in-depth half; the real immunity is
+	-- this card no longer living in G.jokers at all). eternal_compat must be
+	-- true for Card:set_eternal to actually take -- it silently no-ops
+	-- against a false eternal_compat (confirmed via the real installed
+	-- card.lua), which is what this was set to before (this card never
+	-- reaches a shop/Eternal-roll context anyway, in_pool below already
+	-- keeps it out of the shop, so this was harmless before but needs to
+	-- flip now that we explicitly set eternal on it ourselves).
+	eternal_compat = true,
 	pos = { x = 0, y = 0 },
 	-- CORRECTED via live testing: 'ChangeStake' is not a real Joker spritesheet
 	-- -- referencing an invalid atlas broke card construction before
@@ -306,27 +484,23 @@ SMODS.Joker {
 }
 
 -- Ensures the player has exactly one copy of the Traits Engine pseudo-Joker,
--- added directly to the Joker area (bypassing shop/pack draw entirely). Called
--- from Game:start_run (hooks.lua). Card key is prefixed by SMODS with this
--- mod's `prefix` field (see BalatroTFT.json) -- resolves to
+-- added directly to the dedicated system-card area (objects/round_flow/
+-- system_cards.lua), bypassing shop/pack draw AND G.jokers entirely as of
+-- 2026-09-01 -- see that file's own header comment for the full reasoning.
+-- Called from Game:start_run (hooks.lua). Card key is prefixed by SMODS with
+-- this mod's `prefix` field (see BalatroTFT.json) -- resolves to
 -- 'j_tft_traits_engine', confirmed live.
 --
--- FIXED via live testing: the first attempt used `SMODS.create_card({...})`,
+-- FIXED via live testing (original version, when this still targeted
+-- G.jokers directly): the first attempt used `SMODS.create_card({...})`,
 -- which produced a Card with a nil `.ability` and crashed the whole game the
 -- next frame (card.lua's update_alert indexing self.ability.set). The real,
 -- correct API -- confirmed against ClaudeControl's own api/cheats.lua
 -- `spawn_joker` -- is the global `create_card(_type, area, legendary, rarity,
 -- skip_materialize, soulable, forced_key)` function, not a SMODS.* method.
+-- TFT.add_system_card (system_cards.lua) uses this exact same real API.
 function TFT.ensure_traits_engine_joker()
-	if not G.jokers then return end
-	for _, c in ipairs(G.jokers.cards) do
-		if c.config and c.config.center and c.config.center.key == 'j_tft_traits_engine' then
-			return -- already present
-		end
-	end
-	local card = create_card('Joker', G.jokers, nil, nil, nil, nil, 'j_tft_traits_engine')
-	card:add_to_deck()
-	G.jokers:emplace(card)
+	TFT.add_system_card('j_tft_traits_engine')
 end
 
 -- Financiers: interest cap 25 (vanilla default) -> 30/50/100 at tiers 1/2/3.
